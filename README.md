@@ -7,10 +7,18 @@ documents in the restricted data directory and are not part of this repository.
 
 | Output | Shape |
 |---|---|
-| `Project_9004_Unified_Emerging_Biomarkers.tab` | 19,450 rows × 23,932 columns |
-| `Project_9004_Data_Dictionary.tab` | 23,932 entries × 9 columns, 1:1 with the dataset |
+| `Project_9004_Unified_Emerging_Biomarkers.tab` | 19,450 rows × 35,566 columns |
+| `Project_9004_Data_Dictionary.tab` | 35,566 entries × 9 columns, 1:1 with the dataset |
 | `Project_9004_Data_Dictionary.xlsx` | same content, one row per entry |
 | `comparison_to_previous_release.md` | full diff against the previous release |
+
+Those shapes are as shipped, after harmonization. The build reaches 23,932 columns at
+step 8, and steps 9–10 add the 11,634 that make up the difference — 11,633
+`harmonized_*` analyte and PC columns plus `collection_era`. Documents generated at step
+8, `comparison_to_previous_release.md` among them, therefore report 23,932 and are not
+stale: they describe the dataset at the point the comparison against the previous
+release was made. See [Data size and coverage](#data-size-and-coverage) for the full
+column breakdown.
 
 Planning document: [PHASE1_REBUILD_PLAN.md](PHASE1_REBUILD_PLAN.md).
 
