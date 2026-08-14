@@ -225,11 +225,12 @@ transformation, and no other block's names change — so
 Ancestry distribution: EUR 3,727 · AJ 1,008 · AMR 70 · AFR 39 · AAC 36 · EAS 35 ·
 MDE 23 · CAH 21 · CAS 13 · SAS 9 · FIN 4.
 
-> **Downstream note (phase 2):** `batch.yaml` strata are defined on `GP2_nba_label`.
-> `p9001_Genetic_PRS_InfPop` is the larger and more current label but is *not*
-> automatically adopted — switching strata is an analysis decision, deliberately out of
-> scope here. Worth noting the two labels will disagree for some participants; a
-> crosstab belongs in the step 8 comparison.
+> **Downstream note (analysis stage):** at plan time `batch.yaml` strata were defined on
+> `GP2_nba_label`. `p9001_Genetic_PRS_InfPop` is the larger and more current label but was
+> *not* automatically adopted — switching strata is an analysis decision, deliberately out
+> of scope for the build. It was adopted subsequently: the phase-1-wrap `batch.yaml`
+> stratifies on `p9001_Genetic_PRS_InfPop`. The two labels disagree for some participants;
+> the crosstab is in the step 8 comparison.
 
 ### 4. `key` — new hard-keyed merge column with a hygiene audit
 
@@ -394,13 +395,17 @@ Ordered by what would actually catch a defect.
 
 ---
 
-## Out of scope (phase 2)
+## Out of scope for the build (deferred to the analysis stage)
 
-Per the notes, deferred until the data foundation is asserted solid:
+Per the notes, deferred until the data foundation is asserted solid. Listed as planned,
+with where each one landed:
 
-- Combining projects by assay and analyte type
-- Re-running the regression / meta-analysis batch and the app
-- Adding p312/p314 (and p9001) prefixes to `PROTEOMIC_PREFIXES` in `regressions.py` —
-  still hard-coded to `p277_CSF`, `p282_*`, `p288_*`, `p293_olink_plasma`, so the new
-  projects are invisible to the batch until edited
-- Whether to move `batch.yaml` strata from `GP2_nba_label` to `p9001_InfPop`
+- Combining projects by assay and analyte type — **done**, as the six `harmonized_*`
+  blocks
+- Re-running the regression / meta-analysis batch and the app — batch **running**; the
+  app is still outstanding
+- Adding p312/p314 (and p9001) prefixes to the assay prefix list in `regressions.py` —
+  **done**. The list is `ASSAY_PREFIXES`, not `PROTEOMIC_PREFIXES` as written here, and
+  it carries all 12 project and 6 harmonized blocks
+- Whether to move `batch.yaml` strata from `GP2_nba_label` to `p9001_InfPop` —
+  **settled**, strata run on `p9001_Genetic_PRS_InfPop`

@@ -232,13 +232,14 @@ def main() -> None:
       "and RBD, with the genetic enrichment cohort essentially absent; the NMC contrasts "
       "existed as columns but had too few participants to fit. They are now analyzable.")
     w()
-    w("Two consequences worth carrying into phase 2. First, the enrichment cohort is "
-      "**not** proteomically assayed at the same rate as the rest of the study, so a "
-      "larger `grp_NMC_*` N does not translate one-for-one into usable proteomic N — "
-      "check per-block coverage within these groups before powering anything on them. "
-      "Second, adding an enriched carrier cohort shifts the genetic composition of every "
-      "contrast that does not condition on carrier status, `grp_HC_vs_Prodromal` most of "
-      "all, so previous and rebuild effect sizes for those runs are not like-for-like.")
+    w("Two consequences worth carrying into the analysis stage. First, the enrichment "
+      "cohort is **not** proteomically assayed at the same rate as the rest of the "
+      "study, so a larger `grp_NMC_*` N does not translate one-for-one into usable "
+      "proteomic N — check per-block coverage within these groups before powering "
+      "anything on them. Second, adding an enriched carrier cohort shifts the genetic "
+      "composition of every contrast that does not condition on carrier status, "
+      "`grp_HC_vs_Prodromal` most of all, so previous and rebuild effect sizes for those "
+      "runs are not like-for-like.")
     w()
 
     # --- 6. lowput_ratio ---------------------------------------------------
@@ -289,8 +290,8 @@ def main() -> None:
                 ascending=False).head(12).items():
             w(f"| {x} | {y} | {n} |")
         w()
-    w("Analysis strata remain defined on `GP2_nba_label`; adopting the p9001 label is an "
-      "analysis decision left for phase 2.")
+    w("Analysis strata run on `p9001_Genetic_PRS_InfPop`; `GP2_nba_label` is retained "
+      "for continuity with earlier batches.")
     w()
 
     # --- 8. dictionary -----------------------------------------------------

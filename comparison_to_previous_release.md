@@ -145,7 +145,7 @@ The largest proportional change in the table is `grp_NMC_LRRK2` (36 -> 1,534 pos
 
 This is the **enriched LRRK2 / GBA genetic cohort** arriving. The previous scaffold was a proteomics-selected subset whose prodromal arm was almost entirely Hyposmia and RBD, with the genetic enrichment cohort essentially absent; the NMC contrasts existed as columns but had too few participants to fit. They are now analyzable.
 
-Two consequences worth carrying into phase 2. First, the enrichment cohort is **not** proteomically assayed at the same rate as the rest of the study, so a larger `grp_NMC_*` N does not translate one-for-one into usable proteomic N — check per-block coverage within these groups before powering anything on them. Second, adding an enriched carrier cohort shifts the genetic composition of every contrast that does not condition on carrier status, `grp_HC_vs_Prodromal` most of all, so previous and rebuild effect sizes for those runs are not like-for-like.
+Two consequences worth carrying into the analysis stage. First, the enrichment cohort is **not** proteomically assayed at the same rate as the rest of the study, so a larger `grp_NMC_*` N does not translate one-for-one into usable proteomic N — check per-block coverage within these groups before powering anything on them. Second, adding an enriched carrier cohort shifts the genetic composition of every contrast that does not condition on carrier status, `grp_HC_vs_Prodromal` most of all, so previous and rebuild effect sizes for those runs are not like-for-like.
 
 ## 6. `lowput_ratio` — corrected
 
@@ -165,7 +165,7 @@ The previous variable carried essentially no imaging signal — see the `lowput_
 - Participants with `p9001_Genetic_PRS_InfPop`: **3,676**
 - Both present: **2,574**, of which the labels agree on **2,574** (100.00%)
 
-Analysis strata remain defined on `GP2_nba_label`; adopting the p9001 label is an analysis decision left for phase 2.
+Analysis strata run on `p9001_Genetic_PRS_InfPop`; `GP2_nba_label` is retained for continuity with earlier batches.
 
 ## 8. Dictionary
 
