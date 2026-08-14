@@ -174,8 +174,9 @@ prepended to each source name verbatim; genetics is static (`EVENT_ID` is `SC`
 throughout) so it joins on `PATNO`.
 
 p9001 covers **3,676** scaffold participants against GP2's 2,620. Where both exist the
-ancestry labels agree on **100.00%** of 2,574 participants. Analysis strata remain
-defined on `GP2_nba_label` — switching is a phase-2 decision.
+ancestry labels agree on **100.00%** of 2,574 participants. `GP2_*` is retained, but
+analysis strata now run on `p9001_Genetic_PRS_InfPop` — see
+[What changed from the previous batch](#what-changed-from-the-previous-batch).
 
 ### `grp_NMC_*` definition, and the enriched carrier cohort
 
@@ -189,7 +190,7 @@ which preserves the stated intent and leaves behaviour on the old vocabulary unc
 Separately, the curated cut brings in the **enriched LRRK2/GBA cohort**, which the
 proteomics-selected internal cut excluded. LRRK2-carrying prodromal participants at
 baseline go from **6 to 239**. The NMC contrasts existed as columns before but had too
-few participants to fit; they are now analyzable. Two cautions carried into phase 2:
+few participants to fit; they are now analyzable. Two cautions carried into analysis:
 the enrichment cohort is not proteomically assayed at the same rate, and adding it
 shifts the genetic composition of every contrast that does not condition on carrier
 status.
@@ -205,7 +206,7 @@ required a sample to carry data in every project, which across six projects leav
 participants; and the pooled matrix is not on a common scale anyway (NPQ vs NPX,
 plate-control vs intensity normalization, differing panel versions). A cross-project
 block belongs **downstream of harmonizing projects by assay and analyte type**, where
-analytes are z-scored within project first — see phase 2.
+analytes are z-scored within project first — see [Analysis stage](#analysis-stage).
 
 The "earliest visit" step takes the earliest qualifying **row**, not `GroupBy.first()`.
 The legacy pipeline used `.first()`, which takes the first non-null value *per column*,
@@ -606,18 +607,29 @@ a sensitivity check.
 This does mean every result differs from the previous batch by one covariate, so
 run-to-run comparisons with the 2026-08-01 batch are not like-for-like.
 
-## Phase 2 (not done here)
+## Analysis stage
 
-- Re-run the regression / meta-analysis batch and the app on the harmonized blocks,
-  adding `collection_era` as a categorical covariate to `batch.yaml` where p277 contributes
-- Add the p312/p314 and `harmonized_*` prefixes to `PROTEOMIC_PREFIXES` in
-  `../regressions.py` — still hard-coded to `p277_CSF`, `p282_*`, `p288_*`,
-  `p293_olink_plasma`, so neither the new projects nor the harmonized blocks are visible
-  to the batch until edited
-- Decide whether to move `batch.yaml` strata from `GP2_nba_label` to the p9001 label
+The build is complete; what follows is the analysis it exists to support. The config
+work is already done — `ASSAY_PREFIXES` carries all 12 project and 6 harmonized blocks,
+strata and PRS come from p9001, `collection_era` is a default covariate, and the
+proteome-wide lens is set — so this stage is execution, not configuration.
+
+**Running**
+
+- The 52-run batch, then `meta_analysis.py`, `calibration_check.py` and
+  `build_results_summary.py`. The config is validated on `NSD_vs_HC` over both strata —
+  see [Re-running the analyses](#re-running-the-analyses).
+
+**Still to do**
+
+- Update the app to read the `harmonized_*` blocks alongside the project-specific ones
+- Re-plot with `plot_results.py`, which lives in the analysis working directory and is
+  not part of this repository
 - Raise the p277 collection-era confound with the data providers — it affects existing
   p277 results independently of this build
-- Re-read any prior result that used `lowput_ratio` / `slope_lowput_ratio`
+- Re-read any prior result that used `lowput_ratio` / `slope_lowput_ratio`. The
+  definition was wrong before this build (see [above](#lowput_ratio--a-pre-existing-bug-fixed)),
+  so earlier numbers built on those columns do not carry over
 
 ## Data size and coverage
 
@@ -687,6 +699,14 @@ project's values. This is why the batch reports `significant_proteome` against a
 **Batch runtime.** One run over both strata takes ~13 minutes at 34,916 predictors per
 stratum, so the 52-run config is roughly **11 hours** serially. The parent directory's
 `run_batch_sharded.sh` shards it across processes if that matters.
+
+## License
+
+Code and documentation in this repository are MIT licensed — see [LICENSE](LICENSE).
+
+The license covers this repository's contents only. It confers no rights over the PPMI
+or GP2 data the pipeline consumes, which stay governed by their own data use agreements;
+see below.
 
 ## Data availability
 
