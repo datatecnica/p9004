@@ -5,7 +5,12 @@ location/dispersion in both projects, the agreement statistics where the same
 PATNO_EVENT_ID appears in both, a proposed linear correction, and a HELD-OUT check of
 whether that correction actually works.
 
-Correction form. The older project is the reference; the newer one is mapped onto it:
+Correction form. In this diagnostic the older project is the reference and the newer one
+is mapped onto it. NOTE this is the opposite orientation to build_step_9_harmonize.py for
+the two Olink blocks: the build references whichever project has MORE ROWS, which is p314
+for both, so slopes and intercepts here are reciprocal to the ones actually applied. The
+four NULISA blocks coincide under either rule. The applied coefficients live in the data
+dictionary; this table is a comparison diagnostic, not the source of the correction:
 
     B_corrected = slope * B + intercept
 
@@ -216,9 +221,22 @@ def main() -> None:
     w("# Paired-project comparison and proposed corrections")
     w()
     w(f"Per-analyte table: `harmonization_corrections.tab` ({len(T):,} rows). "
-      "The older project is the reference; the newer is mapped onto it via "
-      "`B_corrected = slope * B + intercept`, fitted on (EVENT_ID x COHORT) matched "
-      "cells so cohort composition cannot drive the estimate.")
+      "In THIS diagnostic the older project is the reference and the newer is mapped "
+      "onto it via `B_corrected = slope * B + intercept`, fitted on (EVENT_ID x COHORT) "
+      "matched cells so cohort composition cannot drive the estimate.")
+    w()
+    w("**Orientation differs from the shipped build.** `build_step_9_harmonize.py` takes "
+      "the project with MORE ROWS as the reference, so that most of each harmonized "
+      "column is uncorrected native value. For the four NULISA blocks the older project "
+      "is also the larger one and the two rules coincide. For `olink_plasma` and "
+      "`olink_csf` they invert: this table treats p293 and p277 as the references, "
+      "whereas the build maps them ONTO p314. Every number below, including the columns "
+      "named `applied_slope` and `applied_intercept`, is therefore in this diagnostic's "
+      "orientation and is NOT what the build applied to those two blocks — for "
+      "`harmonized_olink_plasma_A1BG_NPX` this table gives 1.847 where the build applied "
+      "0.541, its reciprocal. The coefficients actually applied are recorded per analyte "
+      "in the data dictionary's derivation notes and are verified against the exported "
+      "columns in `harmonized_build_validation.md`. The four NULISA blocks are unaffected.")
     w()
     w("## Gross comparison")
     w()

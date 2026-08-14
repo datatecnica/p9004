@@ -1,6 +1,8 @@
 # Paired-project comparison and proposed corrections
 
-Per-analyte table: `harmonization_corrections.tab` (11,567 rows). The older project is the reference; the newer is mapped onto it via `B_corrected = slope * B + intercept`, fitted on (EVENT_ID x COHORT) matched cells so cohort composition cannot drive the estimate.
+Per-analyte table: `harmonization_corrections.tab` (11,567 rows). In THIS diagnostic the older project is the reference and the newer is mapped onto it via `B_corrected = slope * B + intercept`, fitted on (EVENT_ID x COHORT) matched cells so cohort composition cannot drive the estimate.
+
+**Orientation differs from the shipped build.** `build_step_9_harmonize.py` takes the project with MORE ROWS as the reference, so that most of each harmonized column is uncorrected native value. For the four NULISA blocks the older project is also the larger one and the two rules coincide. For `olink_plasma` and `olink_csf` they invert: this table treats p293 and p277 as the references, whereas the build maps them ONTO p314. Every number below, including the columns named `applied_slope` and `applied_intercept`, is therefore in this diagnostic's orientation and is NOT what the build applied to those two blocks — for `harmonized_olink_plasma_A1BG_NPX` this table gives 1.847 where the build applied 0.541, its reciprocal. The coefficients actually applied are recorded per analyte in the data dictionary's derivation notes and are verified against the exported columns in `harmonized_build_validation.md`. The four NULISA blocks are unaffected.
 
 ## Gross comparison
 
