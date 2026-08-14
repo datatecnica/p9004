@@ -519,6 +519,36 @@ direction `collection_era` was added to produce.
 Both strata together took 13.1 minutes wall-clock, which is the basis for the ~11 hour
 serial estimate below.
 
+### What the 52 runs are
+
+| Aim | Runs | Model | Contrasts |
+|---|---|---|---|
+| 1 — Baseline comparisons | 18 | logit | `NSD_vs_HC`, four `NSD_vs_notNSD_*` genotype splits, sPD vs LRRK2 and sPD vs GBA each with an SAA-adjusted variant, three NSD-stage pairs each with a PD-only variant, stage early vs late, and two baseline cognitive-impairment flags |
+| 2 — Progression | 24 | 8 OLS, 16 Cox | slopes of `moca`, `updrs3_off` (± LEDD adjustment) and `lowput_ratio`; time-to-event for MoCA < 26, cognitive-state worsening, three PD-milestone families, stage D, and two NSD-stage transitions |
+| 3 — Longitudinal trajectories | 10 | LMM | analyte on the LHS against `YEAR × group`: NSD vs HC, both cognitive-impairment flags, stage 2A vs 2B, the three PPMI cohort pairs, and three NSD-status cohort pairs |
+
+Baseline runs use `visit_mode: earliest_with_predictor` — one row per participant at
+their earliest visit carrying the predictor, not `EVENT_ID == BL`. Project 312 was
+sampled at V08–V16, so a baseline restriction would leave it 6–16 participants instead
+of 169–266.
+
+**Twelve of the 52 are PRS-interaction runs** on `p9001_Genetic_PRS_PRS157`. The four
+OLS slope runs express it in the formula (`PROTEIN * PRS157`, reporting the interaction
+term); the eight Cox runs use the `interaction_with` key instead, because lifelines takes
+no formulas — the script builds an inline `predictor:PRS157` design column, keeps both
+main effects, and reports the interaction coefficient as the primary β/SE/P.
+
+Two settings shape whole families of runs:
+
+- **Cox runs set `delayed_entry: true`.** A participant enters the risk set at the visit
+  their predictor was measured, not at study baseline. Without it Project 312 contributes
+  immortal person-time and 57–89% of its events precede measurement.
+- **LMM runs drop `age_at_visit` and substitute baseline `age`.** Time-varying age is
+  collinear with `YEAR` within participant (r = 0.9995), and `YEAR` is the axis the
+  trajectory interaction is fitted on.
+
+`collection_era` is dropped by no run — it applies to all 52, as described below.
+
 The analysis chain is **copied from the parent directory** so this directory is
 self-contained and the pushed repository is runnable end to end:
 
