@@ -1,0 +1,16 @@
+# Project 9004 rebuild + harmonization — phase 1 wrap
+# Verified against Python 3.12.3. Pinned to >= the versions the build was run on.
+
+pandas>=2.3.3         # all I/O and joins
+numpy>=2.4.4          # slopes, outlier masking, correction arithmetic
+openpyxl>=3.1.5       # reads the curated clinical .xlsx; writes the dictionary .xlsx
+scikit-learn>=1.8.0   # StandardScaler + PCA for the per-project and harmonized PC blocks
+
+# Validation only — not needed to build the dataset, but required to reproduce the
+# harmonization evidence (positive/negative controls, heterogeneity tests, lambda).
+statsmodels>=0.14.0   # OLS with cluster-robust SEs in the control analyses
+scipy>=1.11.0         # normal/chi-square tails for the heterogeneity and lambda checks
+
+# Only needed if a proteomic block is re-derived from its raw vendor file rather than
+# reused from its verified *-to_merge.tab. The default build path does not require it.
+pyarrow>=23.0.1       # Project 314 / 293 .parquet sources

@@ -1,0 +1,775 @@
+# Batch regression config — phase 1 wrap (harmonized dataset).
+#
+# Derived from ../adding_p312_and_P314/batch.yaml. Changes from that config:
+#   * input is the rebuilt Project 9004 dataset (19,450 rows x 35,566 cols)
+#   * ancestry strata and genetic PCs come from Project 9001 (GP2 release 12)
+#   * PRS is p9001_Genetic_PRS_PRS157 (r=0.992 with the retired GP2_PRS_zscore)
+#   * collection_era added as a covariate — see the note on default_covariates
+#   * proteome-wide Bonferroni over 9,500 independent proteins (n_independent_proteins)
+#
+# The 6 harmonized_* prefixes are picked up automatically from ASSAY_PREFIXES in
+# ../regressions.py, alongside the 12 project-specific prefixes. Because a harmonized
+# column CONTAINS its reference project's values, the two are heavily correlated and the
+# run-wide Bonferroni denominator would overstate the number of independent tests — read
+# `significant_proteome` (fixed 9,500-protein denominator) as the headline lens and
+# `significant_family` for per-block context.
+
+defaults:
+  # Read the Projects 312/314 dataset from the parent directory; all outputs
+  # (results/, meta/, plots/) resolve relative to THIS config's directory.
+  input_glob: "Project_9004_Unified_Emerging_Biomarkers.tab"
+  output_dir: "results"
+  strata_col: p9001_Genetic_PRS_InfPop
+  strata: [EUR, AJ]
+  # Genetic PCs now come from Project 9001 (3,676 participants vs GP2's 2,620).
+  #
+  # collection_era is global rather than targeted. The intent was to adjust only where
+  # Project 277 contributes, but every run loops ALL proteomic prefixes, so p277_CSF and
+  # harmonized_olink_csf analytes appear in every run — there is no run-level scope that
+  # isolates them. p277's post-2020 samples carry 2 healthy controls against 372 NSD+,
+  # inflating its whole panel (lambda 2.49 vs p314_CSF's 1.11) and making its spike-in
+  # control significant at P=3.9e-4. Era MUST be categorical: a linear year term is worse
+  # than useless (lambda 1.731 vs 1.459) because it extrapolates through single-arm years.
+  # Cost elsewhere is one df. Drop it per-run via drop_covariates for a sensitivity check.
+  default_covariates: [age_at_visit, EDUCYRS, SEX, collection_era,
+                       p9001_Genetic_PRS_PC1, p9001_Genetic_PRS_PC2, p9001_Genetic_PRS_PC3,
+                       p9001_Genetic_PRS_PC4, p9001_Genetic_PRS_PC5]
+  # Effective independent proteins for the proteome-wide Bonferroni lens.
+  n_independent_proteins: 9500
+  random_group: PATNO
+  predictors: both        # proteomic | new | both | [list]
+  min_n: 20               # minimum ROWS in a fit
+  time_col: YEAR          # study-time axis: LMM decomposition + Cox entry time
+  # An LMM must have at least this many independent clusters per fixed-effect
+  # parameter. Eliminates saturated fits (8% of the 2026-07-30 trajectory hits had
+  # fewer subjects than parameters) and cuts Wald-z vs t p-inflation 20.5x -> 1.9x.
+  min_groups_per_param: 2
+  # Cox: enter each participant into the risk set at the visit their predictor was
+  # measured, not at study baseline. Without this, Project 312 (sampled at year 4)
+  # contributes immortal person-time and 57-89% of its events precede measurement.
+  delayed_entry: true
+
+runs:
+
+  # -------------------------------------------------------------------------
+  # Aim 1 — Baseline comparisons (Logit)
+  # -------------------------------------------------------------------------
+  - name: NSD_vs_HC
+    model: logit
+    formula: "grp_NSD_vs_HC ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_vs_HC.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: NSD_vs_notNSD_sPD
+    model: logit
+    formula: "grp_NSD_vs_notNSD_sPD ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_vs_notNSD_sPD.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_vs_notNSD_LRRK2
+    model: logit
+    formula: "grp_NSD_vs_notNSD_LRRK2 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_vs_notNSD_LRRK2.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_vs_notNSD_GBA
+    model: logit
+    formula: "grp_NSD_vs_notNSD_GBA ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_vs_notNSD_GBA.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_vs_notNSD_prodromal
+    model: logit
+    formula: "grp_NSD_vs_notNSD_prodromal ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_vs_notNSD_prodromal.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  # Between-subgroup PD baseline contrasts. Each pair: basic + SAA-adjusted
+  # variant (NSD_Status as covariate). All restrict to baseline; PD-only by
+  # the flag definition (excludes double carriers).
+  - name: sPD_vs_LRRK2
+    model: logit
+    formula: "grp_sPD_vs_LRRK2 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_sPD_vs_LRRK2.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: sPD_vs_LRRK2_SAAadj
+    model: logit
+    formula: "grp_sPD_vs_LRRK2 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_sPD_vs_LRRK2.notna() and NSD_Status.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, NSD_Status]
+
+  - name: sPD_vs_GBA
+    model: logit
+    formula: "grp_sPD_vs_GBA ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_sPD_vs_GBA.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: sPD_vs_GBA_SAAadj
+    model: logit
+    formula: "grp_sPD_vs_GBA ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_sPD_vs_GBA.notna() and NSD_Status.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, NSD_Status]
+
+  # NSD stage pairwise contrasts. Each contrast has two variants:
+  #   <name>           — all-cohort (mixes prodromal NSD+ with PD NSD+)
+  #   <name>_PDonly    — restricted to PD (COHORT==1) with disease_duration_years
+  #                      adjustment for severity-as-time-since-diagnosis
+  - name: NSD_stage_2A_vs_2B
+    model: logit
+    formula: "grp_NSD_stage_2A_vs_2B ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2A_vs_2B.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: NSD_stage_2A_vs_2B_PDonly
+    model: logit
+    formula: "grp_NSD_stage_2A_vs_2B ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2A_vs_2B.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_stage_2A_vs_3
+    model: logit
+    formula: "grp_NSD_stage_2A_vs_3 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2A_vs_3.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: NSD_stage_2A_vs_3_PDonly
+    model: logit
+    formula: "grp_NSD_stage_2A_vs_3 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2A_vs_3.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_stage_2B_vs_3
+    model: logit
+    formula: "grp_NSD_stage_2B_vs_3 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2B_vs_3.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: NSD_stage_2B_vs_3_PDonly
+    model: logit
+    formula: "grp_NSD_stage_2B_vs_3 ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_2B_vs_3.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: NSD_stage_early_vs_late
+    model: logit
+    formula: "grp_NSD_stage_early_vs_late ~ PROTEIN"
+    report_term: "PROTEIN"
+    sample_filter: "grp_NSD_stage_early_vs_late.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: CI_PI_baseline
+    model: logit
+    formula: "CI_PI ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "CI_PI.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: CI_MOCA_baseline
+    model: logit
+    formula: "CI_MOCA ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "CI_MOCA.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  # -------------------------------------------------------------------------
+  # Aim 2 — Progression (OLS on slopes, Cox on time-to-event)
+  # -------------------------------------------------------------------------
+  - name: slope_moca
+    model: ols
+    formula: "slope_moca ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_moca.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: slope_updrs3_off
+    model: ols
+    formula: "slope_updrs3_off ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_updrs3_off.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  # LEDD-adjusted variant: same sample as above but with baseline LEDD as a
+  # covariate. Useful for distinguishing protein effects on motor-progression
+  # rate from confounding by baseline treatment exposure.
+  - name: slope_updrs3_off_LEDD_adj
+    model: ols
+    formula: "slope_updrs3_off ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_updrs3_off.notna() and LEDD.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, LEDD]
+
+  - name: slope_lowput_ratio
+    model: ols
+    formula: "slope_lowput_ratio ~ PROTEIN"
+    report_term: "PROTEIN"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_lowput_ratio.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_moca_lt26
+    model: cox
+    duration_col: tte_moca_lt26_years
+    event_col: event_moca_lt26
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_moca_lt26_years.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_cogstate_worsen
+    model: cox
+    duration_col: tte_cogstate_worsen_years
+    event_col: event_cogstate_worsen
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_cogstate_worsen_years.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_pm_any
+    model: cox
+    duration_col: tte_pm_any_years
+    event_col: event_pm_any
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_any_years.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_pm_cog_any
+    model: cox
+    duration_col: tte_pm_cog_any_years
+    event_col: event_pm_cog_any
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_cog_any_years.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_pm_mc_any
+    model: cox
+    duration_col: tte_pm_mc_any_years
+    event_col: event_pm_mc_any
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_mc_any_years.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: cox_stage_d
+    model: cox
+    duration_col: tte_stage_d_years
+    event_col: event_stage_d
+    sample_filter: "tte_stage_d_years.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: cox_nsd_2a_to_later
+    model: cox
+    duration_col: tte_nsd_2a_to_later_years
+    event_col: event_nsd_2a_to_later
+    sample_filter: "tte_nsd_2a_to_later_years.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  - name: cox_nsd_2b_to_later
+    model: cox
+    duration_col: tte_nsd_2b_to_later_years
+    event_col: event_nsd_2b_to_later
+    sample_filter: "tte_nsd_2b_to_later_years.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+
+  # -------------------------------------------------------------------------
+  # PRS interaction effects on progression
+  # -------------------------------------------------------------------------
+  - name: slope_moca_x_PRS
+    model: ols
+    formula: "slope_moca ~ PROTEIN * p9001_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_moca.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: slope_updrs3_off_x_PRS
+    model: ols
+    formula: "slope_updrs3_off ~ PROTEIN * p9001_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_updrs3_off.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  - name: slope_updrs3_off_x_PRS_LEDD_adj
+    model: ols
+    formula: "slope_updrs3_off ~ PROTEIN * p9001_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_updrs3_off.notna() and p9001_Genetic_PRS_PRS157.notna() and LEDD.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, LEDD]
+
+  # OLS slope on lowput-ratio with PRS interaction.
+  - name: slope_lowput_ratio_x_PRS
+    model: ols
+    formula: "slope_lowput_ratio ~ PROTEIN * p9001_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "slope_lowput_ratio.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years]
+
+  # Cox PRS-interaction runs use the `interaction_with` key (not formula
+  # syntax — lifelines doesn't take formulas). The script builds an inline
+  # `predictor:p9001_Genetic_PRS_PRS157` design column, includes both main effects,
+  # and reports the interaction coef as the primary β/SE/P. The PRS main
+  # effect must be in add_covariates.
+  - name: cox_moca_lt26_x_PRS
+    model: cox
+    duration_col: tte_moca_lt26_years
+    event_col: event_moca_lt26
+    interaction_with: p9001_Genetic_PRS_PRS157
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_moca_lt26_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+
+  - name: cox_cogstate_worsen_x_PRS
+    model: cox
+    duration_col: tte_cogstate_worsen_years
+    event_col: event_cogstate_worsen
+    interaction_with: p9001_Genetic_PRS_PRS157
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_cogstate_worsen_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+
+  - name: cox_pm_any_x_PRS
+    model: cox
+    duration_col: tte_pm_any_years
+    event_col: event_pm_any
+    interaction_with: p9001_Genetic_PRS_PRS157
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+
+  - name: cox_pm_cog_any_x_PRS
+    model: cox
+    duration_col: tte_pm_cog_any_years
+    event_col: event_pm_cog_any
+    interaction_with: p9001_Genetic_PRS_PRS157
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_cog_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+
+  - name: cox_pm_mc_any_x_PRS
+    model: cox
+    duration_col: tte_pm_mc_any_years
+    event_col: event_pm_mc_any
+    interaction_with: p9001_Genetic_PRS_PRS157
+    # PD-only: this is a disease progression readout, and disease_duration_years
+    # is undefined for HC/prodromal so it can only be adjusted for within cases.
+    sample_filter: "tte_pm_mc_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+
+  - name: cox_stage_d_x_PRS
+    model: cox
+    duration_col: tte_stage_d_years
+    event_col: event_stage_d
+    interaction_with: p9001_Genetic_PRS_PRS157
+    sample_filter: "tte_stage_d_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [p9001_Genetic_PRS_PRS157]
+
+  - name: cox_nsd_2a_to_later_x_PRS
+    model: cox
+    duration_col: tte_nsd_2a_to_later_years
+    event_col: event_nsd_2a_to_later
+    interaction_with: p9001_Genetic_PRS_PRS157
+    sample_filter: "tte_nsd_2a_to_later_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [p9001_Genetic_PRS_PRS157]
+
+  - name: cox_nsd_2b_to_later_x_PRS
+    model: cox
+    duration_col: tte_nsd_2b_to_later_years
+    event_col: event_nsd_2b_to_later
+    interaction_with: p9001_Genetic_PRS_PRS157
+    sample_filter: "tte_nsd_2b_to_later_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    # One row per participant at their earliest visit carrying the predictor,
+    # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
+    # BL restriction left it 6-16 participants instead of 169-266.
+    visit_mode: earliest_with_predictor
+    add_covariates: [p9001_Genetic_PRS_PRS157]
+
+  # -------------------------------------------------------------------------
+  # Aim 3 — Longitudinal trajectories by group (protein on LHS, interaction on RHS)
+  #
+  # Only time-varying predictors are valid LMM outcomes here. APOE_e4 and
+  # p9001_Genetic_PRS_PRS157 are static per-patient and belong in the baseline runs
+  # above, not in trajectories — hence `predictors: proteomic` (not `both`).
+  # The 12 other non-proteomic biomarkers are also time-varying (measured at
+  # multiple visits) and can be added via `predictors: both` if desired, but
+  # default to proteomic-only here for interpretability.
+  # -------------------------------------------------------------------------
+  - name: trajectory_NSD_vs_HC
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_NSD_vs_HC"
+    report_term: "YEAR:grp_NSD_vs_HC"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_NSD_vs_HC.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_CI_MOCA
+    model: lmm
+    formula: "PROTEIN ~ YEAR * CI_MOCA"
+    report_term: "YEAR:CI_MOCA"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "CI_MOCA.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_stage_2A_vs_2B
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_NSD_stage_2A_vs_2B"
+    report_term: "YEAR:grp_NSD_stage_2A_vs_2B"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_NSD_stage_2A_vs_2B.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_CI_PI
+    model: lmm
+    formula: "PROTEIN ~ YEAR * CI_PI"
+    report_term: "YEAR:CI_PI"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "CI_PI.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  # Cohort-level trajectory comparisons (binary contrasts using the cohort
+  # flags emitted by the recode step). These answer the word doc's "does
+  # longitudinal change differ by group?" question across the three classic
+  # PPMI cohorts (HC, Prodromal, PD).
+  - name: trajectory_HC_vs_Prodromal
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_HC_vs_Prodromal"
+    report_term: "YEAR:grp_HC_vs_Prodromal"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_HC_vs_Prodromal.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_HC_vs_PD
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_HC_vs_PD"
+    report_term: "YEAR:grp_HC_vs_PD"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_HC_vs_PD.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_Prodromal_vs_PD
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_Prodromal_vs_PD"
+    report_term: "YEAR:grp_Prodromal_vs_PD"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_Prodromal_vs_PD.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  # NSD-conditioned cohort trajectory comparisons (HC NSD- / Prod NSD+ /
+  # PD NSD+ pairwise). Restricts each cohort to its disease-defining NSD
+  # status before contrasting trajectories.
+  - name: trajectory_HCNSDneg_vs_ProdNSDpos
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_HCNSDneg_vs_ProdNSDpos"
+    report_term: "YEAR:grp_HCNSDneg_vs_ProdNSDpos"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_HCNSDneg_vs_ProdNSDpos.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_HCNSDneg_vs_PDNSDpos
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_HCNSDneg_vs_PDNSDpos"
+    report_term: "YEAR:grp_HCNSDneg_vs_PDNSDpos"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_HCNSDneg_vs_PDNSDpos.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
+
+  - name: trajectory_ProdNSDpos_vs_PDNSDpos
+    model: lmm
+    formula: "PROTEIN ~ YEAR * grp_ProdNSDpos_vs_PDNSDpos"
+    report_term: "YEAR:grp_ProdNSDpos_vs_PDNSDpos"
+    predictors: proteomic
+    random_group: PATNO
+    sample_filter: "grp_ProdNSDpos_vs_PDNSDpos.notna()"
+    # Time-varying age_at_visit is collinear with YEAR within subject
+    # (r = 0.9995, d(age)/d(YEAR) = 1.005); `age` is age at study baseline.
+    drop_covariates: [age_at_visit]
+    add_covariates: [age]
+    # Split YEAR into within-subject change and between-subject sampling time,
+    # reported as two terms. Keeps single-visit subjects (they inform the
+    # intercept, group effect and covariates) without letting them contribute
+    # to the trajectory coefficient, where they carry no information.
+    decompose_time: true
+    random_slope: YEAR
