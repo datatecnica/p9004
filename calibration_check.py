@@ -53,6 +53,20 @@ _FILENAME_RE = re.compile(r"^(?P<name>.+)-(?P<stratum>[A-Za-z0-9]+)-(?P<ts>\d{8}
 CONTROL_TYPE_I_LIMIT = 10.0  # percent, i.e. 2x nominal
 
 
+def _flag(g: pd.DataFrame, col: str) -> pd.Series:
+    """A results-CSV significance column as a clean boolean mask.
+
+    The column may be absent, or round-trip through the CSV as the strings
+    "True"/"False", so a bare truth test would count "False" as significant.
+    """
+    if col not in g.columns:
+        return pd.Series(False, index=g.index)
+    s = g[col]
+    if s.dtype == object:
+        return s.astype(str).str.strip().str.lower().eq("true")
+    return s.fillna(False).astype(bool)
+
+
 def lambda_gc(p: pd.Series | np.ndarray) -> float:
     p = np.asarray(p, dtype=float)
     p = p[np.isfinite(p) & (p > 0) & (p <= 1)]
@@ -105,9 +119,13 @@ def control_report(results_dir: str) -> pd.DataFrame:
                 "n_controls": len(g),
                 "pct_p05": 100 * float((g["P"] < 0.05).mean()),
                 "lambda": lambda_gc(g["P"]),
+                # Controls significant under EITHER Bonferroni lens. The union is taken
+                # over the ROWS and then counted; until 2026-08-15 this bitwise-OR'd the
+                # two COUNTS, which is arithmetic on integers rather than a set union
+                # (4 controls run-wide | 2 family-wide reported 6, and 5 | 3 reported 7,
+                # neither of which can exceed n_controls). Raised twice by the stats core.
                 "n_bonferroni": int(
-                    (g.get("significant", pd.Series(False, index=g.index)) == True).sum()
-                    | (g.get("significant_family", pd.Series(False, index=g.index)) == True).sum()
+                    (_flag(g, "significant") | _flag(g, "significant_family")).sum()
                 ),
             })
     return pd.DataFrame(rows)
@@ -118,12 +136,22 @@ def control_report(results_dir: str) -> pd.DataFrame:
 # ============================================================================
 
 def permutation_null(config_path: str, run_name: str, stratum: str,
-                     n_sample: int, seed: int) -> pd.DataFrame:
+                     n_sample: int, seed: int, n_perm: int = 1) -> pd.DataFrame:
     """Refit `n_sample` analytes with the group label shuffled between subjects.
 
     The shuffle is blocked on (n_obs, mean-time tertile) so the permuted groups keep
     the real design's follow-up imbalance. Any inflation that survives is the model,
     not the biology.
+
+    Repeated `n_perm` times, returning one row per fit with a `perm` column. A single
+    permutation gives a point estimate with no sense of its own spread — the stats core
+    asked how much of a verdict rests on which shuffle happened to be drawn, and with
+    replicates that question is answerable from the output rather than assumed away.
+
+    THE ANALYTE SAMPLE IS HELD FIXED across replicates (drawn once, from `seed`) while
+    only the label shuffle varies (`seed + i`). Redrawing analytes each replicate would
+    fold analyte-sampling variance into the spread and overstate permutation
+    instability, which is the opposite of what the replicates are measuring.
     """
     import yaml
     import regressions as R
@@ -155,24 +183,39 @@ def permutation_null(config_path: str, run_name: str, stratum: str,
         work = work.query(sample_filter)
     work = work.copy()
 
-    rng = np.random.default_rng(seed)
+    # Fixed across replicates — see the docstring.
+    cols = [c for c in proteomic if c in work.columns]
+    sample = list(np.random.default_rng(seed).choice(
+        cols, size=min(n_sample, len(cols)), replace=False))
+    spec = dict(spec)
+    spec["predictors"] = sample
+
     per = work.groupby("PATNO").agg(lab=(group_col, "first"),
                                     n_obs=(time_col, "size"),
                                     mt=(time_col, "mean"))
     blk = (per.n_obs.clip(upper=4).astype(str) + "|"
            + pd.qcut(per.mt, 3, labels=False, duplicates="drop").astype(str))
-    permuted = per.lab.copy()
-    for _, idx in per.groupby(blk).groups.items():
-        permuted.loc[idx] = rng.permutation(per.lab.loc[idx].to_numpy())
-    work[group_col] = work.PATNO.map(permuted.to_dict())
+    blocks = list(per.groupby(blk).groups.values())
 
-    cols = [c for c in proteomic if c in work.columns]
-    sample = list(rng.choice(cols, size=min(n_sample, len(cols)), replace=False))
-    spec = dict(spec)
-    spec["predictors"] = sample
+    frames: list[pd.DataFrame] = []
+    for i in range(n_perm):
+        rng = np.random.default_rng(seed + i)
+        permuted = per.lab.copy()
+        for idx in blocks:
+            permuted.loc[idx] = rng.permutation(per.lab.loc[idx].to_numpy())
+        rep = work.copy()
+        rep[group_col] = rep.PATNO.map(permuted.to_dict())
 
-    out = R.run_one(work, spec, None, defaults, set(proteomic), assay_of)
-    return R.filter_numerical_failures(out, f"NULL:{run_name}|{stratum}")
+        out = R.run_one(rep, spec, None, defaults, set(proteomic), assay_of)
+        out = R.filter_numerical_failures(out, f"NULL:{run_name}|{stratum}|perm{i}")
+        if not out.empty:
+            out = out.copy()
+            out["perm"] = i
+            frames.append(out)
+        print(f"    permutation {i + 1}/{n_perm}: {len(out):,} fits"
+              f"{'' if not out.empty else '  (none survived filtering)'}", flush=True)
+
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 # ============================================================================
@@ -184,6 +227,10 @@ def main() -> None:
     ap.add_argument("--permute", nargs="*", default=[], help="run name(s) to permutation-test")
     ap.add_argument("--stratum", default="EUR")
     ap.add_argument("--n-sample", type=int, default=150)
+    ap.add_argument("--n-perm", type=int, default=10,
+                    help="permutation replicates per run (default 10). Cost is linear: "
+                         "each replicate refits --n-sample analytes. 1 reproduces the "
+                         "pre-2026-08-15 single-shuffle behaviour.")
     ap.add_argument("--seed", type=int, default=20260731)
     ap.add_argument("--output", default="calibration_report.md")
     args = ap.parse_args()
@@ -218,20 +265,49 @@ def main() -> None:
         lines.append("Group labels shuffled between subjects within blocks of "
                      "(n_obs, mean-time tertile), preserving the real follow-up imbalance. "
                      "A calibrated run returns λ ≈ 1 and ~5% at P<0.05.\n")
-        lines.append("| Run | Term | n fits | λ (null) | % P<0.05 |")
-        lines.append("|---|---|---|---|---|")
+        lines.append(f"Each run is permuted **{args.n_perm}×** over the same fixed sample of "
+                     f"{args.n_sample} analytes, so the spread below is permutation "
+                     f"variability alone, not analyte sampling. A single replicate reports "
+                     f"a point with no error bar; the **range** column is what says whether "
+                     f"that point could be trusted.\n")
+        lines.append("| Run | Term | perms | n fits | λ mean ± sd | λ range | "
+                     "% P<0.05 mean ± sd | % range | warn |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        warn_total = 0
         for run_name in args.permute:
             res = permutation_null(args.config, run_name, args.stratum,
-                                   args.n_sample, args.seed)
+                                   args.n_sample, args.seed, args.n_perm)
             if res.empty:
-                lines.append(f"| `{run_name}` | — | 0 | — | — |")
+                lines.append(f"| `{run_name}` | — | 0 | 0 | — | — | — | — | — |")
                 continue
-            groups = res.groupby("term") if "term" in res.columns else [("effect", res)]
-            for term, g in groups:
-                lines.append(f"| `{run_name}` | {term} | {len(g)} | {lambda_gc(g['P']):.3f} | "
-                             f"{100 * (g['P'] < 0.05).mean():.1f}% |")
-                print(f"  {run_name} [{term}]: λ={lambda_gc(g['P']):.3f}  "
-                      f"{100 * (g['P'] < 0.05).mean():.1f}% at P<0.05")
+            terms = res["term"].unique() if "term" in res.columns else ["effect"]
+            for term in terms:
+                g = res[res["term"] == term] if "term" in res.columns else res
+                per_perm = g.groupby("perm")["P"].agg(
+                    lam=lambda p: lambda_gc(p),
+                    pct=lambda p: 100 * float((p < 0.05).mean()),
+                    n="size")
+                lam, pct = per_perm["lam"], per_perm["pct"]
+                # A replicate over the limit is a warning; replicates straddling it mean
+                # the verdict depends on which shuffle was drawn, which is exactly the
+                # instability a single permutation cannot reveal.
+                n_over = int((pct > CONTROL_TYPE_I_LIMIT).sum())
+                straddles = 0 < n_over < len(pct)
+                warn_total += n_over
+                flag = ("⚠️ unstable" if straddles else
+                        "⚠️ inflated" if n_over == len(pct) else "ok")
+                lines.append(
+                    f"| `{run_name}` | {term} | {len(per_perm)} | {int(per_perm['n'].sum()):,} | "
+                    f"{lam.mean():.3f} ± {lam.std():.3f} | {lam.min():.3f}–{lam.max():.3f} | "
+                    f"{pct.mean():.1f}% ± {pct.std():.1f} | {pct.min():.1f}–{pct.max():.1f}% | "
+                    f"{flag} |")
+                print(f"  {run_name} [{term}]: λ={lam.mean():.3f}±{lam.std():.3f}  "
+                      f"{pct.mean():.1f}%±{pct.std():.1f} at P<0.05  "
+                      f"({n_over}/{len(pct)} replicates over "
+                      f"{CONTROL_TYPE_I_LIMIT:.0f}%){'  UNSTABLE' if straddles else ''}")
+        lines.append(f"\n**{warn_total}** permutation replicate(s) exceeded the "
+                     f"{CONTROL_TYPE_I_LIMIT:.0f}% type-I limit across all runs tested. "
+                     f"A run flagged `unstable` had replicates on both sides of it.\n")
 
     with open(args.output, "w") as f:
         f.write("\n".join(lines) + "\n")

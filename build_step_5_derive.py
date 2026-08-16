@@ -79,6 +79,42 @@ def baseline_mask(df: pd.DataFrame) -> pd.Series:
     return df["EVENT_ID"] == "BL"
 
 
+def assert_year_zero_is_baseline(df: pd.DataFrame) -> None:
+    """Verify the two baseline conventions in this file agree, and fail loudly if not.
+
+    The time-to-event builders select baseline as `YEAR == 0`, while
+    `baseline_mask` / `build_ledd_and_duration` select it as `EVENT_ID == 'BL'`.
+    That is only safe because YEAR in the curated cut is an integer visit label
+    (0..15), not a date difference: on the 2026-05-11 cut, YEAR == 0 and
+    EVENT_ID == 'BL' select the identical 4,788 rows, one per participant.
+
+    If YEAR were ever derived as (assessdate - enrolldate) it would land slightly
+    either side of 0 and `YEAR == 0` would silently select nothing for some
+    participants, dropping them from every TTE outcome rather than erroring. Raised
+    by the stats core on 2026-08-15; this assertion is the standing answer.
+    """
+    year = pd.to_numeric(df[VISIT_YEAR_COL], errors="coerce")
+    is_bl = df["EVENT_ID"].astype(str).str.strip() == "BL"
+    y0 = year == 0
+
+    if not y0.equals(is_bl):
+        only_y0 = df.loc[y0 & ~is_bl, "EVENT_ID"].astype(str).value_counts().to_dict()
+        only_bl = year[is_bl & ~y0].describe().to_dict()
+        sys.exit(
+            f"FATAL: YEAR == 0 and EVENT_ID == 'BL' disagree.\n"
+            f"  rows YEAR==0 but not BL: {int((y0 & ~is_bl).sum()):,} {only_y0}\n"
+            f"  rows BL but not YEAR==0: {int((is_bl & ~y0).sum()):,} YEAR stats {only_bl}\n"
+            f"  The time-to-event builders assume these are the same rows.")
+
+    dup = int(df.loc[y0, "PATNO"].duplicated().sum())
+    if dup:
+        sys.exit(f"FATAL: {dup:,} participants carry more than one YEAR == 0 row; "
+                 f"the TTE builders take .iloc[0] and would pick one arbitrarily.")
+
+    log(f"  YEAR == 0 <-> EVENT_ID == 'BL': {int(y0.sum()):,} rows, "
+        f"1 per participant, agree exactly")
+
+
 def write_patno_value(df: pd.DataFrame, name: str, by_patno: pd.Series) -> None:
     df[name] = df["PATNO"].map(by_patno)
 
@@ -379,6 +415,9 @@ def main() -> None:
                      dtype={"key": str, "PATNO": str, "EVENT_ID": str, "COHORT": str,
                             "NSD_STAGE": str, "subgroup": str, "analytic_subgroup": str})
     log(f"scaffold: {df.shape[0]:,} rows x {df.shape[1]} columns")
+
+    log("\n--- Baseline convention check ---")
+    assert_year_zero_is_baseline(df)
 
     log("\n--- LEDD / disease duration ---")
     ledd_cols = build_ledd_and_duration(df)

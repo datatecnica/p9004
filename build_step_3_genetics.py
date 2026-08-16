@@ -6,13 +6,13 @@ Two blocks, both participant-level (one row per PATNO, propagated to every visit
            `GP2_clinical_id` becomes the PATNO join key and `GP2_GP2ID` is dropped,
            matching merge_datasets.py and the previous release's 14 GP2_ columns.
 
-  p9001_*  new, from GP2_R12_PPMI_PRS_PCs.csv. `p9001_` is prepended to each source
+  p9005_*  new, from GP2_R12_PPMI_PRS_PCs.csv. `p9005_` is prepended to each source
            column name verbatim, with no other transformation. EVENT_ID is `SC` on
            every row (genetics is static) so it is dropped rather than joined on.
 
 Emits:
   build_intermediates/genetics_gp2-<ts>.tab
-  build_intermediates/genetics_p9001-<ts>.tab
+  build_intermediates/genetics_p9005-<ts>.tab
   build_intermediates/key_audit_genetics-<ts>.tab
 """
 
@@ -31,7 +31,7 @@ OUT = os.path.join(HERE, "build_intermediates")
 
 GP2_SRC = os.path.join(HERE, "initial_build_assets", "MJFF_proteomics-EDA",
                        "GP2_PGS-to_merge.tab")
-P9001_SRC = os.path.join(HERE, "clinical_and_p9001_updates", "GP2_R12_PPMI_PRS_PCs.csv")
+P9005_SRC = os.path.join(HERE, "clinical_and_p9001_updates", "GP2_R12_PPMI_PRS_PCs.csv")
 
 
 def latest(pattern: str) -> str:
@@ -72,32 +72,39 @@ def main() -> None:
         f"{n_match:,} ({n_match / len(gp2) * 100:.1f}%) in scaffold")
     log(f"  columns: {[c for c in gp2.columns if c != 'PATNO']}")
 
-    # --- p9001 (new) -------------------------------------------------------
-    p9 = pd.read_csv(P9001_SRC, dtype={"PATNO": str})
-    log(f"\np9001  source {os.path.basename(P9001_SRC)}  {p9.shape[0]:,} x {p9.shape[1]}")
+    # --- p9005 (new) -------------------------------------------------------
+    p9 = pd.read_csv(P9005_SRC, dtype={"PATNO": str})
+    log(f"\np9005  source {os.path.basename(P9005_SRC)}  {p9.shape[0]:,} x {p9.shape[1]}")
 
-    ev = p9["EVENT_ID"].astype(str).unique()
+    # EVENT_ID must be 'SC' on every row, not merely constant: dropping the column
+    # asserts the block is participant-level static genetics, and a file that arrived
+    # keyed on some other single visit (BL, V04) would satisfy a bare len(ev) == 1
+    # while silently meaning something different. PATNO uniqueness is enforced
+    # separately and fatally by make_patno below.
+    ev = p9["EVENT_ID"].astype(str).str.strip().unique()
     log(f"  EVENT_ID values: {list(ev)}  -> genetics is static, dropping EVENT_ID")
-    assert len(ev) == 1, "p9001 carries more than one EVENT_ID; the static assumption fails"
+    assert set(ev) == {"SC"}, (
+        f"p9005 EVENT_ID is {sorted(ev)}, expected exactly ['SC']; "
+        "the static-genetics assumption fails")
     p9 = p9.drop(columns=["EVENT_ID"])
 
-    patno, f = make_patno(p9, source="p9001")
-    report_findings(f, "p9001")
+    patno, f = make_patno(p9, source="p9005")
+    report_findings(f, "p9005")
     assert_no_fatal(f)
     if not f.empty:
         findings_all.append(f)
     p9["PATNO"] = patno
 
     # Prefix every source column verbatim; PATNO stays the join key.
-    p9 = p9.rename(columns={c: f"p9001_{c}" for c in p9.columns if c != "PATNO"})
+    p9 = p9.rename(columns={c: f"p9005_{c}" for c in p9.columns if c != "PATNO"})
 
     n_match = p9["PATNO"].isin(participants).sum()
-    log(f"  {p9.shape[1] - 1} p9001_ columns, {len(p9):,} participants, "
+    log(f"  {p9.shape[1] - 1} p9005_ columns, {len(p9):,} participants, "
         f"{n_match:,} ({n_match / len(p9) * 100:.1f}%) in scaffold")
 
     prs = [c for c in p9.columns if "_PRS_PRS" in c]
     pcs = [c for c in p9.columns if "_PRS_PC" in c]
-    snps = [c for c in p9.columns if c.startswith("p9001_rs")]
+    snps = [c for c in p9.columns if c.startswith("p9005_rs")]
     other = [c for c in p9.columns if c not in prs + pcs + snps and c != "PATNO"]
     log(f"    {len(prs)} PRS: {prs}")
     log(f"    {len(pcs)} PCs, {len(snps)} SNP dosages, other: {other}")
@@ -106,11 +113,11 @@ def main() -> None:
     both = set(gp2["PATNO"]) & set(p9["PATNO"])
     log(f"\n  participants in both genetics blocks: {len(both):,}  "
         f"(GP2 only {len(set(gp2['PATNO']) - set(p9['PATNO'])):,}, "
-        f"p9001 only {len(set(p9['PATNO']) - set(gp2['PATNO'])):,})")
+        f"p9005 only {len(set(p9['PATNO']) - set(gp2['PATNO'])):,})")
 
     # --- write -------------------------------------------------------------
     f_gp2 = os.path.join(OUT, f"genetics_gp2-{TIMESTAMP}.tab")
-    f_p9 = os.path.join(OUT, f"genetics_p9001-{TIMESTAMP}.tab")
+    f_p9 = os.path.join(OUT, f"genetics_p9005-{TIMESTAMP}.tab")
     f_au = os.path.join(OUT, f"key_audit_genetics-{TIMESTAMP}.tab")
 
     gp2.to_csv(f_gp2, sep="\t", index=False)

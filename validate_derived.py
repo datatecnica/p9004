@@ -4,11 +4,19 @@ The proteomic layer is checked exhaustively by verify_bit_identical.py. This doe
 same job for the two layers that are *expected* to move, and separates legitimate
 movement from drift that would indicate a defect.
 
-Compared on the 10,349 keys present in both releases:
+Compared on the keys present in both releases:
 
   A. CLINICAL source columns carried over from the previous cut. These come from a
      different data cut (public curated vs internal proteomics), so disagreement is
      possible and is worth quantifying rather than assuming either way.
+
+  A2. HARMONIZED proteomic columns, when the baseline has them. Reported as its own
+     layer because it is ~50x the size of the clinical layer: pooling the two gives a
+     percentage dominated by proteomics while labelled clinical. Against a
+     pre-harmonization baseline this section is skipped, since the columns are not
+     shared. NOTE when comparing runs: the clinical rate quoted against a
+     pre-harmonization baseline and against a harmonized one were, before 2026-08-15,
+     the same label over different column sets.
 
   B. DERIVED columns. Split by whether the participant's visit set changed, because 569
      of 2,025 previous participants gained a visit in the refreshed cut. Slopes and
@@ -29,9 +37,11 @@ import sys
 import numpy as np
 import pandas as pd
 
+from build_common import BASELINE_DATASET_STEM, DATASET_STEM, require_build
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-NEW = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
-OLD = os.path.join(HERE, os.pardir, "Project_9004_Unified_Emerging_Biomarkers.tab")
+NEW = require_build(DATASET_STEM)
+OLD = require_build(BASELINE_DATASET_STEM)
 
 DERIVED_PREFIXES = ("grp_", "tte_", "event_", "slope_", "CI_")
 DERIVED_EXTRA = {"lowput_ratio", "time_to_LEDD_years", "disease_duration_years"}
@@ -63,18 +73,32 @@ def main() -> None:
 
     derived = [c for c in nh
                if (c.startswith(DERIVED_PREFIXES) or c in DERIVED_EXTRA) and c in oset]
-    proteomic = [c for c in nh if c.split("_")[0].startswith("p") and c[1].isdigit()]
+    # `harmonized_*` is proteomic. The project-prefix test below ("p" + digit) matches
+    # p277_, p314_ and so on but NOT harmonized_, so before 2026-08-15 the whole
+    # harmonized block fell through into `clinical`. That was invisible while the
+    # baseline was the pre-harmonization release — those columns were not in `oset`, so
+    # they were filtered out as unshared — and only surfaced once the baseline became a
+    # release that HAS them, at which point "clinical" silently became 98% proteomics
+    # (11,573 of 11,789 columns) and its agreement rate stopped being a clinical figure.
+    proteomic = [c for c in nh
+                 if (c.split("_")[0].startswith("p") and c[1].isdigit())
+                 or c.startswith("harmonized_")]
+    harmonized = [c for c in nh if c.startswith("harmonized_") and c in oset
+                  and "earliest_visit_PC" not in c]
     clinical = [c for c in nh
                 if c in oset and c not in derived and c not in set(proteomic)
-                and not c.startswith(("GP2_", "p9001_", "PATNO_", "EVENT_ID_"))
+                and not c.startswith(("GP2_", "p9005_", "PATNO_", "EVENT_ID_"))
                 and "earliest_visit_PC" not in c
                 and c not in ("key", "MERGE_INDEX")]
 
-    print(f"clinical columns shared: {len(clinical)}   derived shared: {len(derived)}")
+    print(f"clinical columns shared: {len(clinical)}   "
+          f"harmonized shared: {len(harmonized)}   derived shared: {len(derived)}")
 
-    a = pd.read_csv(NEW, sep="\t", usecols=["key", "PATNO"] + clinical + derived,
+    a = pd.read_csv(NEW, sep="\t",
+                    usecols=["key", "PATNO"] + clinical + harmonized + derived,
                     low_memory=False, dtype={"key": str, "PATNO": str})
-    b = pd.read_csv(OLD, sep="\t", usecols=["PATNO", "EVENT_ID"] + clinical + derived,
+    b = pd.read_csv(OLD, sep="\t",
+                    usecols=["PATNO", "EVENT_ID"] + clinical + harmonized + derived,
                     low_memory=False, dtype={"PATNO": str, "EVENT_ID": str})
     b["key"] = b["PATNO"].str.strip() + "_" + b["EVENT_ID"].str.strip()
 
@@ -116,6 +140,34 @@ def main() -> None:
     print(f"  columns with any disagreement: {len(bad)}")
     if len(bad):
         print(bad.head(20).to_string(index=False))
+
+    # ------------------------------------------------------------- harmonized
+    # Reported as its own layer rather than folded into the clinical rate: it is
+    # proteomic, it is ~50x the size of the clinical layer, and a pooled percentage
+    # would be dominated by it while being labelled clinical.
+    if harmonized:
+        print()
+        print("=" * 78)
+        print("A2. HARMONIZED proteomic columns, on shared keys")
+        print("=" * 78)
+        rows = []
+        for c in harmonized:
+            bn, ag, vd, pd_ = compare(A[c], B[c])
+            rows.append(dict(column=c, both_null=bn, agree=ag, value_differs=vd,
+                             presence_differs=pd_))
+        hm = pd.DataFrame(rows)
+        tot_h = hm.agree.sum() + hm.value_differs.sum()
+        print(f"  columns: {len(hm)}")
+        print(f"  comparable cells: {tot_h:,}   agree: {hm.agree.sum():,} "
+              f"({hm.agree.sum() / tot_h * 100:.4f}%)   differ: {hm.value_differs.sum():,}")
+        print(f"  presence mismatches: {hm.presence_differs.sum():,}")
+        badh = hm[(hm.value_differs > 0) | (hm.presence_differs > 0)]
+        print(f"  columns with any disagreement: {len(badh)}")
+        if len(badh):
+            print(badh.sort_values("value_differs", ascending=False)
+                  .head(20).to_string(index=False))
+    else:
+        print("\nA2. HARMONIZED — baseline carries no harmonized_* columns; not compared.")
 
     # ---------------------------------------------------------------- derived
     print()

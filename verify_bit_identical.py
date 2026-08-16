@@ -1,27 +1,44 @@
 """Exhaustive check that the proteomic layer is unchanged from the previous release.
 
 Not a sample: every analyte column in every panel, on every key present in both
-releases. Two things are checked per column, because either alone is insufficient:
+releases. Three things are checked, because any one alone is insufficient:
 
+  0. COLUMN SET — the two releases must carry the SAME analyte columns. Checks 1 and 2
+                run on the intersection, so on their own they cannot tell "identical"
+                from "identical wherever they happen to overlap": a release that
+                dropped a whole panel would still pass on whatever remained. Fatal
+                unless --allow-column-diff.
   1. VALUES  — where both releases have a value, they must be equal (exact, not atol)
   2. PRESENCE — the null pattern must match. A value present in one release and NaN in
                 the other is a discrepancy even though no value "differs".
 
+Key coverage is reported the same way (rows only in one release are named, not
+silently skipped) but is not fatal, since releases legitimately gain participants.
+
 Reads each dataset's analyte block once as float32 and compares in memory, rather than
 re-scanning a 1.2 GB TSV per panel.
+
+Usage:
+    python3 verify_bit_identical.py                      # defaults below
+    python3 verify_bit_identical.py --new A.tab --old B.tab
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
 import numpy as np
 import pandas as pd
 
+from build_common import BASELINE_DATASET_STEM, DATASET_STEM, find_build
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-NEW = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
-OLD = os.path.join(HERE, os.pardir, "Project_9004_Unified_Emerging_Biomarkers.tab")
+# find_build, not require_build: this is only the DEFAULT for --new, and resolving it
+# strictly at import would exit before argparse could see an explicit --new/--old pair.
+NEW = find_build(DATASET_STEM)
+OLD = find_build(BASELINE_DATASET_STEM)
 
 PANELS = ["p277_CSF", "p282_CNS_CSF", "p282_Inflammation_CSF", "p288_CNS_plasma",
           "p288_Inflammation_plasma", "p293_olink_plasma", "p312_Inflammation_CSF",
@@ -36,24 +53,64 @@ def analyte_cols(header: list[str]) -> list[str]:
 
 
 def main() -> None:
-    nh = pd.read_csv(NEW, sep="\t", nrows=0).columns.tolist()
-    oh = pd.read_csv(OLD, sep="\t", nrows=0).columns.tolist()
-    shared_cols = [c for c in analyte_cols(nh) if c in set(analyte_cols(oh))]
-    print(f"analyte columns: new {len(analyte_cols(nh)):,}  old {len(analyte_cols(oh)):,}  "
-          f"shared {len(shared_cols):,}")
+    ap = argparse.ArgumentParser(
+        description="Verify the proteomic layer is unchanged between two releases")
+    ap.add_argument("--new", default=NEW, help="the release being checked")
+    ap.add_argument("--old", default=OLD, help="the baseline release")
+    ap.add_argument("--allow-column-diff", action="store_true",
+                    help="report asymmetric analyte columns instead of failing on them")
+    args = ap.parse_args()
 
-    print("reading new ...")
-    a = pd.read_csv(NEW, sep="\t", usecols=["key"] + shared_cols,
+    for label, path in (("new", args.new), ("old", args.old)):
+        if path is None:
+            sys.exit(f"ERROR: no --{label} given and none could be resolved "
+                     f"(expected {DATASET_STEM}_<YYYYMMDD>.tab)")
+        if not os.path.exists(path):
+            sys.exit(f"ERROR: --{label} not found: {path}")
+    print(f"new: {args.new}\nold: {args.old}\n")
+
+    nh = pd.read_csv(args.new, sep="\t", nrows=0).columns.tolist()
+    oh = pd.read_csv(args.old, sep="\t", nrows=0).columns.tolist()
+    an, ao = analyte_cols(nh), analyte_cols(oh)
+    set_n, set_o = set(an), set(ao)
+    shared_cols = [c for c in an if c in set_o]
+
+    # Comparing only the intersection cannot distinguish "the releases are identical"
+    # from "the releases overlap on these columns and differ everywhere else" — a
+    # release that silently dropped a panel would still PASS on whatever remained.
+    # Raised by the stats core; identity now requires shared == both totals.
+    only_new = sorted(set_n - set_o)
+    only_old = sorted(set_o - set_n)
+    print(f"analyte columns: new {len(an):,}  old {len(ao):,}  shared {len(shared_cols):,}")
+    if only_new or only_old:
+        print(f"  only in new: {len(only_new):,}" + (f"  e.g. {only_new[:5]}" if only_new else ""))
+        print(f"  only in old: {len(only_old):,}" + (f"  e.g. {only_old[:5]}" if only_old else ""))
+        if not args.allow_column_diff:
+            print("\nFAIL — the two releases do not carry the same analyte columns, so "
+                  "'identical' cannot be established on the intersection alone.\n"
+                  "       Pass --allow-column-diff to compare the overlap anyway.")
+            sys.exit(1)
+    else:
+        print(f"  column sets are identical ({len(shared_cols):,} = {len(an):,} = {len(ao):,})")
+
+    print("\nreading new ...")
+    a = pd.read_csv(args.new, sep="\t", usecols=["key"] + shared_cols,
                     dtype={"key": str, **{c: np.float32 for c in shared_cols}}).set_index("key")
     print("reading previous ...")
-    b = pd.read_csv(OLD, sep="\t", usecols=["PATNO", "EVENT_ID"] + shared_cols,
+    b = pd.read_csv(args.old, sep="\t", usecols=["PATNO", "EVENT_ID"] + shared_cols,
                     dtype={"PATNO": str, "EVENT_ID": str,
                            **{c: np.float32 for c in shared_cols}})
     b.index = b["PATNO"].str.strip() + "_" + b["EVENT_ID"].str.strip()
     b = b.drop(columns=["PATNO", "EVENT_ID"])
 
     shared_keys = a.index.intersection(b.index)
-    print(f"shared keys: {len(shared_keys):,}\n")
+    # Same blind spot one axis over: rows present in only one release are never compared.
+    # Not fatal — releases legitimately gain participants — but it must be visible, or
+    # "all shared keys match" reads as "every row matches".
+    print(f"shared keys: {len(shared_keys):,} "
+          f"(new {len(a.index):,}, old {len(b.index):,}; "
+          f"only-new {len(a.index.difference(b.index)):,}, "
+          f"only-old {len(b.index.difference(a.index)):,})\n")
     a = a.reindex(shared_keys)[shared_cols]
     b = b.reindex(shared_keys)[shared_cols]
 
@@ -88,9 +145,13 @@ def main() -> None:
         print(f"  {len(bad)} column(s) affected, e.g. {bad[:10]}")
         sys.exit(1)
 
-    print(f"\nPASS — all {len(shared_cols):,} analyte columns are identical across "
+    scope = ("all" if not (only_new or only_old) else "the shared")
+    print(f"\nPASS — {scope} {len(shared_cols):,} analyte columns are identical across "
           f"{int(both.sum()):,} value-carrying cells and {len(shared_keys):,} shared keys, "
           "with matching null patterns.")
+    if only_new or only_old:
+        print(f"       NOTE: {len(only_new):,} column(s) exist only in new and "
+              f"{len(only_old):,} only in old; those were not compared.")
 
 
 if __name__ == "__main__":

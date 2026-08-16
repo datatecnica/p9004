@@ -12,7 +12,7 @@ assay-specific baseline PC columns are auto-appended to the RHS. Per-run
 Bonferroni is 0.05 / N_fitted after numerical-failure filtering.
 
 Usage:
-    python3 regressions.py --config batch.yaml [--run run_name]
+    python3 regressions.py --config batch.yaml [--run run_name] [--resume]
 
 Design mirrors ../LRRK2-April2026/lrrk2_regressions.py for OLS/Logit/LMM math
 (z-scoring, 3-tier LMM fallback, same numerical-failure filter, λ per run/assay);
@@ -96,7 +96,7 @@ N_INDEPENDENT_PROTEINS = 9500
 
 # Bonferroni family for every predictor without a high-throughput proteomics project
 # prefix: the targeted biomarkers (abeta, asyn, tau, ptau, NFL, BMP species, urate),
-# genetics (APOE_e4, p9001_Genetic_PRS_PRS157) and clinical measures (upsit, hemohi). Several of
+# genetics (APOE_e4, p9005_Genetic_PRS_PRS157) and clinical measures (upsit, hemohi). Several of
 # these are proteins too -- they are just measured by targeted/clinical assays rather
 # than a high-throughput panel, which is why the family is named for the platform and
 # not for whether the analyte is a protein.
@@ -107,11 +107,12 @@ NON_HT_PROTEOMICS_FAMILY = "non_highthroughput_proteomics"
 # via defaults.new_predictors in the YAML.
 NEW_PREDICTORS = [
     "APOE_e4",
-    # Project 9001 (GP2 release 12) PRS. Replaces GP2_PRS_zscore, which it correlates
-    # with at r=0.992 while covering 3,676 participants against 2,620 — so PRS results
-    # stay comparable to earlier batches. PRS152/PRS149 in the same file are a different
-    # construct (r~0.5) and are NOT interchangeable; see the Project 9001 documentation.
-    "p9001_Genetic_PRS_PRS157",
+    # Project 9005 (GP2 release 12) PRS, carried under the p9001_ prefix until
+    # 2026-08-15. Replaces GP2_PRS_zscore, which it correlates with at r=0.992 while
+    # covering 3,676 participants against 2,620 — so PRS results stay comparable to
+    # earlier batches. PRS152/PRS149 in the same file are a different construct
+    # (r~0.5) and are NOT interchangeable; see the Project 9005 documentation.
+    "p9005_Genetic_PRS_PRS157",
     "upsit",
     "abeta",
     "asyn",
@@ -565,7 +566,7 @@ def fit_cox(
     if not _HAS_LIFELINES:
         sys.exit("ERROR: lifelines not installed. Run: pip install -r requirements.txt")
     if interaction_with == predictor_col:
-        # Self-interaction (e.g. GP2_PRS_zscore × GP2_PRS_zscore) is degenerate
+        # Self-interaction (e.g. the PRS crossed with itself) is degenerate
         # — skip rather than emit a quadratic-term row.
         return None
     cols = [duration_col, event_col, predictor_col] + [c for c in covariates if c != predictor_col]
@@ -1181,8 +1182,64 @@ def lambda_gc(pvals: pd.Series) -> tuple[float, int]:
 # Main driver
 # ============================================================================
 
-def run_all(config: dict, cwd: str, run_filter: list[str] | None) -> None:
+def find_existing_output(cwd: str, output_dir: str, name: str, suffix: str) -> str | None:
+    """Newest non-empty CSV already written for this run and stratum, or None.
+
+    Outputs are named f"{name}-{suffix}-{timestamp}.csv", so globbing the literal
+    f"{name}-{suffix}-" prefix cannot collide with a longer run name that shares a
+    prefix: "slope_moca-EUR-*" does not match "slope_moca_x_PRS-EUR-...".
+
+    Any matching file counts, whatever batch wrote it — the timestamp is not
+    compared against the current run.
+    """
+    pattern = os.path.join(cwd, output_dir, f"{name}-{suffix}-*.csv")
+    hits = [p for p in sorted(glob.glob(pattern)) if os.path.getsize(p) > 0]
+    return hits[-1] if hits else None
+
+
+def run_all(config: dict, cwd: str, run_filter: list[str] | None,
+            resume: bool = False) -> None:
     defaults = config.get("defaults", {})
+    output_dir = defaults.get("output_dir", "results")
+    os.makedirs(os.path.join(cwd, output_dir), exist_ok=True)
+
+    strata_col = defaults.get("strata_col")
+    strata_vals = defaults.get("strata") or [None]
+
+    # Resolve the work list before loading the dataset: a resumed batch that has
+    # nothing left to do should not spend minutes reading a multi-GB .tab first.
+    work: list[tuple[dict, list[tuple[str | None, str]]]] = []
+    n_skipped = 0
+    for spec in config["runs"]:
+        name = spec.get("name", "unnamed")
+        if run_filter and name not in run_filter:
+            continue
+
+        run_strata = spec.get("strata", strata_vals)
+        if not run_strata:
+            run_strata = [None]
+
+        pending: list[tuple[str | None, str]] = []
+        for sv in run_strata:
+            suffix = sv if sv is not None else "ALL"
+            done = find_existing_output(cwd, output_dir, name, suffix) if resume else None
+            if done:
+                log.info(f"  resume: {name}|{suffix} already written "
+                         f"({os.path.basename(done)}); skipping")
+                n_skipped += 1
+            else:
+                pending.append((sv, suffix))
+        if pending:
+            work.append((spec, pending))
+
+    n_pending = sum(len(p) for _, p in work)
+    if resume:
+        log.info(f"Resume: {n_skipped} run/stratum pair(s) already on disk, "
+                 f"{n_pending} to fit.")
+    if not work:
+        log.info("Nothing to do.")
+        return
+
     input_glob = defaults.get("input_glob", "unified_PPMI-*.tab")
     input_path = resolve_input_path(input_glob, cwd)
     df = load_data(input_path)
@@ -1193,27 +1250,16 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None) -> None:
     proteomic_set = set(proteomic_cols)
     log.info(f"  {len(proteomic_cols):,} proteomic columns; {len(NEW_PREDICTORS)} non-proteomic in default list")
 
-    output_dir = defaults.get("output_dir", "results")
-    os.makedirs(os.path.join(cwd, output_dir), exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    strata_col = defaults.get("strata_col")
-    strata_vals = defaults.get("strata") or [None]
-
-    for spec in config["runs"]:
+    for spec, pending in work:
         name = spec.get("name", "unnamed")
-        if run_filter and name not in run_filter:
-            continue
         log.info("")
         log.info("=" * 70)
         log.info(f"RUN: {name}  (model={spec['model']})")
         log.info("=" * 70)
 
-        run_strata = spec.get("strata", strata_vals)
-        if not run_strata:
-            run_strata = [None]
-
-        for sv in run_strata:
+        for sv, suffix in pending:
             results = run_one(df, spec, sv, defaults, proteomic_set, assay_of)
             results = filter_numerical_failures(results, f"{name}|{sv}")
             results = apply_bonferroni(
@@ -1225,7 +1271,6 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None) -> None:
                 log.warning(f"  [{name}|{sv}] no results after filtering; no CSV written")
                 continue
 
-            suffix = sv if sv is not None else "ALL"
             out = os.path.join(cwd, output_dir, f"{name}-{suffix}-{timestamp}.csv")
             results.to_csv(out, index=False)
             n_sig = int(results["significant"].sum())
@@ -1275,6 +1320,12 @@ def main() -> None:
     p.add_argument("--config", required=True, help="Path to YAML config file")
     p.add_argument("--run", nargs="+", default=None,
                    help="Only execute the named run(s) (by 'name' key). Accepts multiple.")
+    p.add_argument("--resume", action="store_true",
+                   help="Skip any run/stratum that already has a non-empty CSV in "
+                        "output_dir, from any batch. Composes with --run. A stratum "
+                        "that legitimately wrote no CSV (every fit a numerical "
+                        "failure, as small strata often produce) is indistinguishable "
+                        "from one that died before writing, so it is re-fitted.")
     args = p.parse_args()
 
     cwd = os.path.dirname(os.path.abspath(args.config)) or os.getcwd()
@@ -1285,7 +1336,7 @@ def main() -> None:
     log.info(f"Config: {args.config}")
     log.info(f"Log:    {log_file}")
     cfg = load_config(args.config)
-    run_all(cfg, cwd, args.run)
+    run_all(cfg, cwd, args.run, args.resume)
     log.info("\nDone.")
 
 

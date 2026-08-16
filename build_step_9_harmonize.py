@@ -141,14 +141,37 @@ def main() -> None:
         iqrM = (gM[cM].quantile(.75) - gM[cM].quantile(.25)).reindex(cells).to_numpy()
         wt = np.minimum(nR[cells].to_numpy(), nM[cells].to_numpy()).astype(float)
 
+        # Scope of the per-analyte weight mask below: an analyte absent from a cell has
+        # no median there, and only those analytes are affected by masking the weights.
+        gap = np.isnan(medR) | np.isnan(medM)
+        log(f"  {int(gap.sum()):,} of {gap.size:,} analyte-cells carry no median; "
+            f"{int(gap.any(axis=0).sum()):,} of {len(core):,} analytes are missing in "
+            f"at least one cell")
+
         def combine(idx):
+            # Cell-size-weighted mean down the cell axis, per analyte.
+            #
+            # The denominator must be summed over the SAME cells the numerator used.
+            # Until 2026-08-15 this divided every statistic by the total weight of all
+            # cells while np.nansum skipped the cells where that analyte had no median
+            # — so an analyte measured in only some cells had its median and IQR pulled
+            # toward zero in proportion to its missingness. Because the slope is IR/IM,
+            # the bias partly cancels there, but it does not cancel in the intercept
+            # (MR - slope*MM), and it does not cancel when the two projects have
+            # different missingness patterns. Raised by the stats core; the weights are
+            # now masked per analyte before both the numerator and the denominator.
             W = wt[idx][:, None]
-            s = W.sum(axis=0)
+
+            def wmean(mat):
+                m = mat[idx]
+                Wm = np.where(np.isnan(m), 0.0, W)      # broadcasts to (cells, analytes)
+                s = Wm.sum(axis=0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    return np.nansum(m * Wm, axis=0) / np.where(s > 0, s, np.nan)
+
             with np.errstate(invalid="ignore", divide="ignore"):
-                MR = np.nansum(medR[idx] * W, axis=0) / s
-                MM = np.nansum(medM[idx] * W, axis=0) / s
-                IR = np.nansum(iqrR[idx] * W, axis=0) / s
-                IM = np.nansum(iqrM[idx] * W, axis=0) / s
+                MR, MM = wmean(medR), wmean(medM)
+                IR, IM = wmean(iqrR), wmean(iqrM)
                 sl = IR / IM
             sl = np.where(np.isfinite(sl) & (IM > 1e-9), sl, 1.0)
             return sl, MR, MM

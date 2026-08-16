@@ -34,6 +34,13 @@ from scipy.stats import chi2
 _FILENAME_RE = re.compile(r"^(?P<name>.+)-(?P<stratum>[^-]+)-(?P<ts>\d{8}_\d{6})\.csv$")
 _META_RE = re.compile(r"^META_(?P<name>.+)-(?P<ts>\d{8}_\d{6})\.csv$")
 
+# The PRS as it appears in the `predictor` column of every results CSV. Must track
+# regressions.py NEW_PREDICTORS: this is matched by equality, so a stale name yields
+# zero PRS-as-predictor hits silently rather than raising. It read GP2_PRS_zscore
+# until 2026-08-15, which the p9005 genetics block had already retired — so the
+# "PRS as the looped predictor" count was reported as 0 regardless of the results.
+PRS_PREDICTOR = "p9005_Genetic_PRS_PRS157"
+
 
 def lambda_gc(pvals) -> float:
     p = pd.Series(pvals).dropna()
@@ -419,15 +426,15 @@ def main() -> None:
         # Use the deduped tuples for "unique hits"
         prs_interaction = hits[hits["run"].str.contains("_x_PRS", regex=False)] \
                               if not hits.empty else pd.DataFrame()
-        prs_predictor   = hits[hits["predictor"] == "GP2_PRS_zscore"] \
+        prs_predictor   = hits[hits["predictor"] == PRS_PREDICTOR] \
                               if not hits.empty else pd.DataFrame()
         prs_union = pd.concat([prs_interaction, prs_predictor]).drop_duplicates(
             subset=["run", "predictor", "outcome"]) if not hits.empty else pd.DataFrame()
         lines.append("\n## PRS involvement\n")
         lines.append(f"- **PRS-interaction runs** (name contains `_x_PRS`): "
                      f"**{len(prs_interaction)}** unique hits "
-                     f"(reported β = `predictor:GP2_PRS_zscore` interaction term).")
-        lines.append(f"- **PRS as the looped predictor** (`GP2_PRS_zscore` main effect): "
+                     f"(reported β = `predictor:{PRS_PREDICTOR}` interaction term).")
+        lines.append(f"- **PRS as the looped predictor** (`{PRS_PREDICTOR}` main effect): "
                      f"**{len(prs_predictor)}** unique hits.")
         lines.append(f"- **Union** (any PRS involvement): **{len(prs_union)}** unique hits.\n")
         if not prs_interaction.empty:
