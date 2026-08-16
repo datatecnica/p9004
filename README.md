@@ -68,7 +68,7 @@ pip install -r requirements.txt
 
 python3 build_step_1_clinical_scaffold.py   # curated xlsx -> scaffold + key + hygiene audit
 python3 build_step_2_format_blocks.py       # validate 10 blocks, coverage vs scaffold
-python3 build_step_3_genetics.py            # GP2_* (retained) + p9001_* (new)
+python3 build_step_3_genetics.py            # GP2_* (retained) + p9005_* (new)
 python3 build_step_4_merge.py               # left-join everything onto the scaffold
 python3 build_step_5_derive.py              # 54 derived analysis variables
 python3 build_step_6_block_pcs.py           # 12 PC blocks -> 120 columns
@@ -173,17 +173,17 @@ Note the DaTscan series also changed: the curated public cut carries only the MI
 (`MIA_*`) reconstruction, not the `DATSCAN_*` series, and the two are different
 quantifications (r ≈ 0.89–0.90) — so values would not have reproduced regardless.
 
-### New `p9001_*` genetics block, alongside the retained `GP2_*`
+### New `p9005_*` genetics block, alongside the retained `GP2_*`
 
 Both are kept. `GP2_*` rebuilds unchanged (3,359 participants, 14 columns).
 `GP2_R12_PPMI_PRS_PCs.csv` adds 4,985 participants × 172 columns: 4 PRS variants, an
-inferred-ancestry label, 10 within-population PCs, and 157 SNP dosages. `p9001_` is
+inferred-ancestry label, 10 within-population PCs, and 157 SNP dosages. `p9005_` is
 prepended to each source name verbatim; genetics is static (`EVENT_ID` is `SC`
 throughout) so it joins on `PATNO`.
 
-p9001 covers **3,676** scaffold participants against GP2's 2,620. Where both exist the
+p9005 covers **3,676** scaffold participants against GP2's 2,620. Where both exist the
 ancestry labels agree on **100.00%** of 2,574 participants. `GP2_*` is retained, but
-analysis strata now run on `p9001_Genetic_PRS_InfPop` — see
+analysis strata now run on `p9005_Genetic_PRS_InfPop` — see
 [What changed from the previous batch](#what-changed-from-the-previous-batch).
 
 ### `grp_NMC_*` definition, and the enriched carrier cohort
@@ -540,7 +540,7 @@ their earliest visit carrying the predictor, not `EVENT_ID == BL`. Project 312 w
 sampled at V08–V16, so a baseline restriction would leave it 6–16 participants instead
 of 169–266.
 
-**Twelve of the 52 are PRS-interaction runs** on `p9001_Genetic_PRS_PRS157`. The four
+**Twelve of the 52 are PRS-interaction runs** on `p9005_Genetic_PRS_PRS157`. The four
 OLS slope runs express it in the formula (`PROTEIN * PRS157`, reporting the interaction
 term); the eight Cox runs use the `interaction_with` key instead, because lifelines takes
 no formulas — the script builds an inline `predictor:PRS157` design column, keeps both
@@ -587,9 +587,9 @@ committed.
 | | Previous | Now |
 |---|---|---|
 | Input | `../unified_PPMI-*.tab` | `Project_9004_Unified_Emerging_Biomarkers.tab` |
-| Ancestry strata | `GP2_nba_label` | **`p9001_Genetic_PRS_InfPop`** |
-| Genetic PCs | `GP2_PC1–5` | **`p9001_Genetic_PRS_PC1–5`** |
-| PRS | `GP2_PRS_zscore` | **`p9001_Genetic_PRS_PRS157`** |
+| Ancestry strata | `GP2_nba_label` | **`p9005_Genetic_PRS_InfPop`** |
+| Genetic PCs | `GP2_PC1–5` | **`p9005_Genetic_PRS_PC1–5`** |
+| PRS | `GP2_PRS_zscore` | **`p9005_Genetic_PRS_PRS157`** |
 | Assay prefixes | 12 project blocks | 12 project + **6 harmonized** |
 | Multiple testing | run-wide + per-family | + **proteome-wide over 9,500 proteins** |
 | Covariates | — | + **`collection_era`** |
@@ -604,7 +604,7 @@ which are a different construct entirely** (r ≈ 0.46–0.49 against the legacy
 they are not interchangeable, and the Project 9001 documentation describes the variant
 sets in detail.
 
-**Genetics are static and propagate across all timepoints.** The p9001 source file is
+**Genetics are static and propagate across all timepoints.** The p9005 source file is
 `EVENT_ID == SC` only; it is joined on `PATNO` alone, so every one of the 18 visit codes
 carries the values (76.8–100% of rows) with zero participants holding conflicting
 values. `SC` itself does not appear in the dataset.
@@ -649,7 +649,7 @@ run-to-run comparisons with the 2026-08-01 batch are not like-for-like.
 
 The build is complete; what follows is the analysis it exists to support. The config
 work is already done — `ASSAY_PREFIXES` carries all 12 project and 6 harmonized blocks,
-strata and PRS come from p9001, `collection_era` is a default covariate, and the
+strata and PRS come from p9005, `collection_era` is a default covariate, and the
 proteome-wide lens is set — so this stage is execution, not configuration.
 
 **Running**
@@ -682,7 +682,7 @@ proteome-wide lens is set — so this stage is execution, not configuration.
 | **Harmonized proteomic analytes** | **11,567** |
 | Per-project PCs (12 blocks × 10) | 120 |
 | **Harmonized PCs (6 blocks × 10)** | **60** |
-| Genetics — `GP2_*` 14 + `p9001_*` 172 | 186 |
+| Genetics — `GP2_*` 14 + `p9005_*` 172 | 186 |
 | Derived analysis variables | 54 |
 | Technical (`key`, `MERGE_INDEX`, plate IDs, join artifacts, `_src`, `collection_era`) | 32 |
 | **Total** | **35,566** |
@@ -716,7 +716,7 @@ against the two projects they pool.
 Every harmonized block covers more participants than either project alone — the largest
 gain is `harmonized_olink_plasma` at 2,323 against p293's 304 and p314_Plasma's 2,087.
 
-Genetics: **2,620** participants carry `GP2_*`, **3,676** carry `p9001_*`. Both are
+Genetics: **2,620** participants carry `GP2_*`, **3,676** carry `p9005_*`. Both are
 static and propagate to every visit.
 
 ### Reading the coverage numbers
@@ -756,7 +756,7 @@ nothing in the pipeline will run without them.
 |---|---|---|
 | Clinical scaffold — `PPMI_Curated_Data_Cut_Public_20260511` | Parkinson's Progression Markers Initiative (PPMI), sponsored by the Michael J. Fox Foundation | PPMI data access application |
 | Proteomic blocks — Projects 277, 282, 288, 293, 312, 314 | PPMI project data, vendor QC-filtered releases | PPMI data access application |
-| Genetics — `GP2_*`, `p9001_*` (release 12 PRS and PCs) | Global Parkinson's Genetics Program (GP2), funded by the Aligning Science Across Parkinson's initiative | GP2 data access application |
+| Genetics — `GP2_*`, `p9005_*` (release 12 PRS and PCs) | Global Parkinson's Genetics Program (GP2), funded by the Aligning Science Across Parkinson's initiative | GP2 data access application |
 
 The rebuilt `Project_9004_Unified_Emerging_Biomarkers.tab`, its data dictionary and the
 `results/` regression outputs are **derivatives of restricted data** and are likewise not
@@ -819,3 +819,387 @@ for the correction's credibility, so they stay.
 Note this means `EDA_PCA_plots/*-eigenvectors-*.tab` are excluded, which is intended —
 they are participant-level (PATNO + PC scores). The dataset and dictionary themselves
 are excluded too; they go through the usual access path, not a git push.
+
+
+## August 15th updates
+
+This section records the 2026-08-15 rebuild: what it changed, and the disposition of
+every point raised in the stats core's code review. The build itself is a re-run of the
+same pipeline — steps 1-10 unchanged in structure — so anything not listed here is
+unchanged by construction, and the validation below is what establishes that.
+
+### Named sources
+
+Both inputs are stated explicitly here because "the curated cut" and "the GP2 file" are
+ambiguous once more than one release exists:
+
+| Layer | File | Sheet |
+|---|---|---|
+| Clinical scaffold | `clinical_and_p9001_updates/PPMI_Curated_Data_Cut_Public_20260511 (2).xlsx` | `20260511` |
+| Genetics (PRS, PCs, ancestry, SNP dosages) | `clinical_and_p9001_updates/GP2_R12_PPMI_PRS_PCs.csv` | — |
+
+The curated cut carries 19,450 rows x 212 columns and is the sole source of the clinical
+layer. The GP2 file is release 12, keyed on `PATNO` with `EVENT_ID == 'SC'` on every row.
+
+### The genetics block is now `p9005_`, formerly `p9001_`
+
+Project 9001 was renumbered 9005, so the block prefix follows it. This is a rename only —
+the source file, the join, the column stems and every value are unchanged:
+
+| Was | Now |
+|---|---|
+| `p9001_Genetic_PRS_PRS157` | `p9005_Genetic_PRS_PRS157` |
+| `p9001_Genetic_PRS_InfPop` | `p9005_Genetic_PRS_InfPop` |
+| `p9001_Genetic_PRS_PC1–5` | `p9005_Genetic_PRS_PC1–5` |
+| `p9001_rs*` (157 dosages) | `p9005_rs*` |
+
+The rename reaches the dataset, the dictionary and `batch.yaml` — including `strata_col`,
+the five genetic PC covariates, and the twelve `*_x_PRS` run formulas. The source
+directory `clinical_and_p9001_updates/` keeps its name: it is an input folder, not a
+released artifact.
+
+**Any analysis script or saved query referencing `p9001_*` must be updated.** The old
+columns do not exist in this release under either name.
+
+### Releases are dated
+
+The dataset and dictionary now carry the build date:
+
+```
+Project_9004_Unified_Emerging_Biomarkers_<YYYYMMDD>.tab
+Project_9004_Data_Dictionary_<YYYYMMDD>.tab
+Project_9004_Data_Dictionary_<YYYYMMDD>.xlsx
+```
+
+so a release identifies itself and two builds can sit side by side without one silently
+overwriting the other. Consumers resolve their input through `build_common.find_build()`,
+which takes the newest stamp and falls back to the older undated filename.
+
+The stamp is **YYYYMMDD, not DDMMYYYY**. Every consumer — `regressions.py` included —
+resolves its input as the last entry of a sorted glob, and only an ISO-ordered stamp makes
+lexical order chronological. Under DDMMYYYY, `02092026` sorts above `15082026`, and a
+batch would quietly fit the older release.
+
+### Stats core review — disposition
+
+Six points were raised. Two were live bugs affecting reported output, two were latent
+bugs that could not fire on this data, one was a concern that does not apply to this
+data's coding, and one was a design request.
+
+| # | Location | Finding | Disposition |
+|---|---|---|---|
+| 1 | `build_results_summary.py` | PRS referenced by the retired name `GP2_PRS_zscore` | **Fixed — was live** |
+| 2 | `build_step_3_genetics.py` | `EVENT_ID` asserted constant, not asserted to be `SC` | **Fixed** |
+| 3 | `build_step_5_derive.py` | `year == 0` may not be baseline | **Does not apply — now guarded** |
+| 4 | `build_step_9_harmonize.py` | weighted-average denominator ignores NaN mask | **Fixed — latent, zero effect here** |
+| 5a | `calibration_check.py` | `n_bonferroni` bitwise-ORs two counts | **Fixed — was live** |
+| 5b | `calibration_check.py` | single permutation has no error bar | **Implemented, default 10** |
+| 6 | `verify_bit_identical.py` | compares only the shared columns | **Fixed** |
+
+#### 1. PRS name in the results summary — was live
+
+`build_results_summary.py` filtered PRS-as-predictor hits with
+`hits["predictor"] == "GP2_PRS_zscore"`. That column was retired when the genetics block
+landed, so the filter matched nothing and the summary reported **0 PRS main-effect hits
+regardless of the actual results** — a silent zero, not an error. The name now lives in a
+single `PRS_PREDICTOR` constant carrying a comment tying it to `regressions.py`'s
+`NEW_PREDICTORS`, since equality matching is exactly the failure mode that recurs.
+
+#### 2. Genetics `EVENT_ID` — fixed
+
+The assert required `len(ev) == 1`. A file keyed on a single *different* visit — `BL`,
+`V04` — would have satisfied it while meaning something entirely different from static
+genetics, and `EVENT_ID` is dropped immediately afterwards on the strength of that
+assumption. Now `set(ev) == {"SC"}`, and the failure message reports what was found.
+
+PATNO uniqueness, raised in the same point, was already enforced and fatal — in
+`build_common.make_patno()`, which flags `duplicate_patno` as `FATAL` because a repeated
+PATNO in a participant-level block would fan out the scaffold on join. A comment now
+points there so the check is findable from the call site.
+
+#### 3. `year == 0` as baseline — does not apply here, now guarded
+
+The concern was that `year` might be `assessdate - enrolldate`, which lands slightly
+either side of zero and would make `year == 0` silently select nothing for some
+participants — dropping them from every time-to-event outcome without any error.
+
+Checked against the cut directly. `YEAR` is an **integer visit label** (0-15), not a date
+difference:
+
+- `YEAR == 0` and `EVENT_ID == 'BL'` select the **identical 4,788 rows**
+- exactly one row per participant, **0 duplicates**
+- no other `EVENT_ID` value carries `YEAR == 0`
+
+So the three time-to-event builders are correct as written. Rather than leave that
+resting on a one-off check, `assert_year_zero_is_baseline()` now runs at the top of step
+5 and fails the build with a diagnostic if a future cut ever breaks the equivalence.
+This is the safer form of the answer: the concern was right about the consequence, and
+the only reason it does not bite is a property of the data that nothing was enforcing.
+
+#### 4. Harmonization weighted average — real bug, no effect on this data
+
+`combine()` computed each weighted mean as `nansum(stat * W) / W.sum()`. The numerator
+skips cells where an analyte has no median; the denominator summed **all** cell weights
+regardless. An analyte missing from some cells would have its median and IQR pulled
+toward zero in proportion to its missingness.
+
+The weights are now masked per analyte before both numerator and denominator.
+
+**On this dataset the fix changes nothing**, and that was measured rather than assumed —
+both code paths were run over the real merged intermediate:
+
+| Block | Analytes | Cells | Analyte-cells with no median | Coefficients that move |
+|---|---|---|---|---|
+| `olink_plasma` | 5,400 | 12 | 0 of 64,800 | 0 |
+| `olink_csf` | 5,416 | 4 | 0 of 21,664 | 0 |
+| `nulisa_cns_plasma` | 127 | 10 | 0 of 1,270 | 0 |
+| `nulisa_cns_csf` | 128 | 6 | 0 of 768 | 0 |
+| `nulisa_inf_plasma` | 249 | 10 | 0 of 2,490 | 0 |
+| `nulisa_inf_csf` | 247 | 6 | 0 of 1,482 | 0 |
+
+Max `|Δslope|` and `|Δintercept|` are exactly 0 in every block, and no analyte gains or
+loses a bootstrap-supported slope. The reason is structural: these are panel-wide assays,
+so once a cell clears `MIN_CELL = 10` samples per project, every analyte in the panel has
+a median there — the numerator's `nansum` never had anything to skip.
+
+The fix is kept because that is a property of the current panels, not of the code, and a
+future cut with partial panel coverage would trigger the bias. Since the real data cannot
+exercise the NaN path, correctness was established on a constructed case instead: with
+one analyte absent from the heaviest of three cells, the old denominator returns 0.833
+against a true weighted mean of 5.0 — 16.7% of the correct value, biased downward as
+described. A step-9 log line now reports how many analyte-cells lack a median, so the
+day this stops being zero is visible in the build log.
+
+#### 5a. `n_bonferroni` — was live
+
+```python
+int((g["significant"] == True).sum() | (g["significant_family"] == True).sum())
+```
+
+This is a bitwise OR of two **integers**, not a union of two row sets: 4 and 2 report 6;
+5 and 3 report 7 — neither of which can exceed `n_controls`. Now the masks are unioned
+and then counted. A `_flag()` helper also guards the case where a CSV round-trips the
+column back as the strings `"True"`/`"False"`, where a bare truth test counts `"False"`
+as significant.
+
+#### 5b. Multiple permutations — implemented
+
+`--n-perm`, default **10**. A single shuffle gives a point estimate with no sense of its
+own spread, so a verdict could rest on which permutation happened to be drawn.
+
+The **analyte sample is held fixed** across replicates (drawn once from `--seed`) while
+only the label shuffle varies. Redrawing analytes each replicate would fold
+analyte-sampling variance into the spread and overstate permutation instability, which is
+the opposite of what the replicates measure.
+
+The report gives λ and % P<0.05 as mean ± sd with the observed range, counts replicates
+over the 10% type-I limit, and flags a run `⚠️ unstable` when replicates fall on **both
+sides** of the limit — the case where a single permutation would have returned the wrong
+verdict. Cost is linear in `--n-perm`; pass `--n-perm 1` for the old behaviour.
+
+#### 6. `verify_bit_identical.py` — fixed
+
+The script intersected the two releases' analyte columns and compared only the overlap,
+which cannot distinguish "the releases are identical" from "the releases agree wherever
+they happen to overlap". A release that dropped an entire panel would still have passed
+on whatever remained.
+
+Column-set asymmetry is now **fatal** — identity requires `shared == both totals` — with
+`--allow-column-diff` to compare the overlap deliberately. Columns present in only one
+release are named. Key coverage is reported the same way (rows in only one release are
+counted, not silently skipped) but stays non-fatal, since releases legitimately gain
+participants. `--new` / `--old` were added so any two releases can be compared.
+
+### Table 2 — composition of the unified dataset
+
+Regenerated from the shipped file by [build_composition_table.py](build_composition_table.py),
+so the numbers are a property of the artifact a reader holds rather than of the build log.
+
+| Column group | Columns | Rows missing | Participants missing | Participants | Visits | Visits/participant, mean (SD) | Median | Range |
+|---|---|---|---|---|---|---|---|---|
+| Clinical / demographic | 210 | 0.0% | 0.0% | 4,788 | 19,450 | 4.06 (3.29) | 3 | 1–16 |
+| Genetics (GP2 + Project 9005) | 186 | 11.2% | 22.3% | 3,722 | 17,274 | 4.64 (3.39) | 3 | 1–16 |
+| Project 282 (NULISA CSF) | 376 | 88.2% | 59.9% | 1,921 | 2,298 | 1.20 (0.40) | 1 | 1–2 |
+| Project 288 (NULISA plasma) | 380 | 86.2% | 60.9% | 1,870 | 2,679 | 1.43 (0.69) | 1 | 1–3 |
+| Project 277 (Olink CSF) | 5,416 | 94.0% | 84.4% | 746 | 1,167 | 1.56 (0.58) | 2 | 1–4 |
+| Project 293 (Olink plasma) | 5,415 | 96.0% | 93.7% | 304 | 784 | 2.58 (0.58) | 3 | 1–3 |
+| Project 312 (NULISA CSF + plasma) | 931 | 89.7% | 73.6% | 1,264 | 2,001 | 1.58 (0.80) | 1 | 1–4 |
+| Project 314 (Olink CSF + plasma) | 10,817 | 82.0% | 50.1% | 2,390 | 3,505 | 1.47 (0.73) | 1 | 1–4 |
+| Harmonized proteomic blocks (6) | 11,567 | 73.9% | 39.3% | 2,906 | 5,073 | 1.75 (1.01) | 1 | 1–6 |
+| Derived + baseline-PC | 234 | 0.0% | 0.0% | 4,788 | 19,450 | 4.06 (3.29) | 3 | 1–16 |
+| Technical | 34 | — | 0.0% | 4,788 | 19,450 | 4.06 (3.29) | 3 | 1–16 |
+| **Total** | **35,566** | — | — | **4,788** | **19,450** | — | — | — |
+
+**Table 2. Composition of the unified dataset** (19,450 participant-visits × 35,566
+columns, 4,788 unique participants across 18 visit codes). **Missingness** is the share
+of the 19,450 visit rows carrying no value anywhere in that block; genetics is static per
+participant, so it is also quoted as the share of *participants* lacking the block, the
+row-level figure being the wrong description of a participant-level layer.
+**Participants**, **visits** and **visits per participant** are counted over the
+participants who carry the block at all, and are the quantities that survive a change in
+scaffold size — percentages are not comparable with those of an earlier release, because
+the scaffold grew from 10,334 to 19,450 rows while six of the twelve project blocks
+gained no new samples, so their missingness rises without any loss of data while the
+absolute counts do not move. **Mean (SD) and median are both given** because the
+distribution is skewed: a block assayed once for most participants and repeatedly for a
+longitudinal subset has a mean pulled above a median of 1, and the mean alone would
+suggest longitudinal depth the block does not have. The **range** separates a block where
+every participant has exactly one visit from one where half have one and half have
+twelve. Proteomic blocks are sparse by design — each assay was run on a subset of visits,
+and an analysis of any single protein uses only the visits in which it was measured. The
+harmonized blocks are the least sparse proteomic columns because each is the union of two
+projects rather than one.
+
+#### What the added columns show that missingness alone did not
+
+`p293_olink_plasma` is the sparsest block in the table at **96.0% of rows missing**, which
+reads as the weakest. It covers **304 participants at a median of 3 visits** (range 1–3):
+small, but nearly complete longitudinally. `p282_CNS_CSF` looks far healthier at **88.2%**
+— and covers **1,921 participants at a median of 1 visit** (range 1–2): six times the
+participants, almost no repeat measurement.
+
+Those two blocks support different questions, and the missingness column alone ranks them
+in the wrong order for any longitudinal analysis. That is the reason the participant and
+visit counts are in the table rather than in a footnote telling the reader they would have
+been the comparable quantity.
+
+#### Differences from the previous version of this table
+
+Column counts agree for nine of eleven groups and on the 35,566 total. Two differences:
+
+**1. Two columns move from Clinical to Technical** (212 → 210, 32 → 34). `PATNO` and
+`EVENT_ID` are classified as technical identifiers here, alongside `key` and
+`MERGE_INDEX`. A boundary choice, not a change in the data.
+
+**2. Four groups report lower missingness, because the figure is now block-level.** Where
+the previous table gave a *range across sub-panels*, this one gives a single share of rows
+with no value anywhere in the group — so a row counts as present if any column in the
+block has a value, and the block-level figure necessarily sits at or below the floor of
+the per-panel range:
+
+| Group | Previous | Now | Reason |
+|---|---|---|---|
+| Genetics | 45.3% / 23.2% of participants | 11.2% of rows, 22.3% of participants | previous quoted GP2 and p9005 separately; the 22.3% participants-missing is what compares to the old 23.2% |
+| Project 312 | 91.7–93.8% | 89.7% | union across CSF + plasma rather than per panel |
+| Project 314 | 84.9–89.2% | 82.0% | as above |
+| Harmonized | 78.0–83.9% | 73.9% | as above |
+
+`p277`, `p293`, `p282` and `p288` agree to within 0.1 percentage point, which is the check
+that the two tables are otherwise measuring the same thing.
+
+### Validation of this rebuild
+
+The rebuild was run against three predictions stated **before** it started, so validation
+was a test rather than a description. Baseline throughout is
+`Project_9004_old_Unified_Emerging_Biomarkers.tab`, the previous build of this same
+pipeline.
+
+| Prediction | Result |
+|---|---|
+| The 12 project panels are bit-identical to the baseline | **PASS** — 0 value diffs, 0 presence diffs over 40,508,347 cells |
+| `harmonized_*` values are unchanged (the item-4 fix is inert here) | **PASS** — 0 diffs over 39,789,813 cells; fill-rule and recorded-coefficient checks both 0 mismatches |
+| Dataset and dictionary differ from the baseline **only** by the p9005 rename | **PASS** — undoing the rename reproduces the baseline header exactly, including order |
+
+**The two releases are data-identical.** Every value in all 35,566 columns is unchanged;
+the only difference in the 2.19 GB file is the 172 renamed genetics column names. That is
+the expected result and worth stating plainly: five of the six review items were fixes to
+*reporting and validation* code rather than to the build, items 2 and 3 are assertions
+that pass without altering output, and item 4 was demonstrated inert on this data. What
+this rebuild produced is the rename, dated filenames, standing guards for future cuts,
+and the evidence that none of the fixes moved a number.
+
+#### The proteomic layer
+
+```
+analyte columns: new 23,335  old 23,335  shared 23,335
+  column sets are identical (23,335 = 23,335 = 23,335)
+shared keys: 19,450 (new 19,450, old 19,450; only-new 0, only-old 0)
+
+TOTAL   23,335 cols   40,508,347 cells   0 val diff   0 presence diff
+```
+
+**What "PASS" now means is stronger than it used to be**, and the difference is the
+point of the item-6 fix. The previous script reported `shared 23,335` and compared those
+columns — a release that had dropped an entire panel would have passed on whatever
+remained, because the intersection is defined by the smaller release. The check now
+establishes that 23,335 is the *complete* analyte column count in **both** releases, and
+that key coverage is symmetric (0 only-new, 0 only-old), before comparing a single value.
+Only then does "identical across 40,508,347 cells" mean identical rather than identical
+where they happened to overlap.
+
+This is worth stating plainly because the two outputs look almost the same. A reader
+skimming for the word PASS learns nothing new; the guarantee behind it changed.
+
+#### The clinical, harmonized and derived layers
+
+```
+A.  CLINICAL     213 columns    2,772,267 cells   100.0000% agree   0 differ
+A2. HARMONIZED  11,573 columns  39,789,813 cells  100.0000% agree   0 differ
+B.  DERIVED      47 expected to reproduce -> 47 exact, 0 disagree
+D.  ATTRIBUTION  no unexplained disagreements
+```
+
+All 4,788 participants have an unchanged visit set, so section C (participants who gained
+visits) is empty by construction and every derived column is held to exact reproduction.
+
+**These are 100.0000%, against the 99.9573% recorded for the previous build above. The
+difference is the baseline, not the build.** That figure compares against the
+pre-rebuild release, which was assembled from a *different clinical cut*, so revisions
+there are expected and were quantified. This rebuild is compared against the immediately
+previous build of the same pipeline from the same cut, where the only licensed difference
+is the rename — so anything other than exact agreement would be a defect. The two numbers
+answer different questions and should not be read as a trend.
+
+Even the seven deliberately-changed columns (`grp_NMC_*`, `lowput_ratio`,
+`slope_lowput_ratio`) agree 100%, because both releases already carry the corrected
+definitions; they changed relative to the pre-rebuild release, not to this baseline.
+
+##### A labelling defect found while validating
+
+`validate_derived.py` classified proteomic columns by testing whether the first
+underscore-token is `p` followed by a digit. That matches `p277_`, `p314_` and so on, but
+not `harmonized_`, so the entire harmonized block fell through into the CLINICAL bucket.
+
+It could not show up before. Against a pre-harmonization baseline those columns are not
+present in both releases, so the shared-column filter removed them and the clinical
+figure was genuinely clinical. The moment the baseline became a release that *has*
+harmonized columns, "clinical" silently became **11,789 columns, 98.2% of them
+proteomics** — and its agreement rate stopped describing the clinical layer while keeping
+the name.
+
+Fixed by classifying `harmonized_*` as proteomic and reporting it as its own layer (A2
+above). No result changed: the pooled run reported 42,562,080 comparable cells, and the
+layered run reports 2,772,267 + 39,789,813 = 42,562,080, all agreeing. The verdict was
+never wrong — the label was, and a pooled percentage 93% composed of proteomics would
+have gone into a report as a clinical-layer figure.
+
+#### The header
+
+Undoing the rename on the new header reproduces the baseline header **exactly, including
+column order**:
+
+```
+new 35,566 cols | old 35,566 cols
+new-with-rename-undone == old (exact order): True
+172 renamed p9001_ -> p9005_ | 0 p9001_ columns remaining | no other differences
+```
+
+The three shipped files are also byte-for-byte the same size as the baseline's
+(2,190,773,969 / 15,667,223 / 1,804,788). That is expected rather than surprising —
+`p9001` and `p9005` are the same length, so a pure rename preserves byte count — but it
+is a free corroboration that nothing else moved.
+
+### Batch resume
+
+`regressions.py` gained `--resume`, after an interrupted overnight batch had to be
+restarted from the beginning. It skips any run/stratum that already has a non-empty CSV in
+`output_dir`, and composes with `--run`.
+
+Resume is per **(run, stratum)**, not per run, so a run that wrote EUR and then died
+during AJ resumes correctly. The work list is resolved *before* the dataset loads, so a
+resumed batch with nothing left to do exits in a second rather than first reading 2.2 GB.
+
+One deliberate limitation: a stratum that legitimately wrote no CSV — every fit a
+numerical failure, which the smaller AJ stratum does produce — is indistinguishable on
+disk from one that died before writing, so it is re-fitted. Re-fitting is the safe
+direction, and `--help` says so rather than leaving it to be discovered.
