@@ -26,10 +26,12 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
+from build_common import DATASET_STEM, require_build
+
 warnings.filterwarnings("ignore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
+DATA = require_build(DATASET_STEM)
 FIT = sorted(__import__("glob").glob(
     os.path.join(HERE, "build_intermediates", "harmonization_fit-*.tab")))[-1]
 REPORT = os.path.join(HERE, "harmonized_build_validation.md")

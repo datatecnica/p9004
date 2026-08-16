@@ -23,8 +23,10 @@ import sys
 import numpy as np
 import pandas as pd
 
+from build_common import DATASET_STEM, require_build
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
+DATA = require_build(DATASET_STEM)
 REPORT = os.path.join(HERE, "harmonization_block_descriptives.md")
 
 BLOCKS = [

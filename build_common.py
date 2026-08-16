@@ -12,6 +12,8 @@ Defects that would require guessing (a non-numeric PATNO, an empty visit) are ra
 
 from __future__ import annotations
 
+import glob
+import os
 import re
 import sys
 from datetime import datetime
@@ -35,9 +37,63 @@ _FLOATY = re.compile(r"^(\d+)\.0+$")
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+# ---------------------------------------------------------------- build artefacts
+#
+# The shipped dataset and dictionary carry the build date, so a release is
+# self-identifying and two builds can sit side by side without one silently
+# overwriting the other.
+#
+# YYYYMMDD, not DDMMYYYY: every consumer resolves its input as the LAST entry of a
+# sorted glob, and only an ISO-ordered stamp makes lexical order chronological.
+# Under DDMMYYYY, 02092026 would sort above 15082026 and a batch would quietly fit
+# the older release.
+BUILD_DATE = TIMESTAMP[:8]
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DATASET_STEM = "Project_9004_Unified_Emerging_Biomarkers"
+DICT_STEM = "Project_9004_Data_Dictionary"
+
+# The release a new build is CHECKED AGAINST: the previous build of this pipeline,
+# renamed in place with an `_old` infix so it sits beside the new one. Distinct from
+# the parent-directory release, which is an older generation still used as a dictionary
+# SOURCE by the build itself — inputs and baselines are deliberately not the same file.
+BASELINE_DATASET_STEM = "Project_9004_old_Unified_Emerging_Biomarkers"
+BASELINE_DICT_STEM = "Project_9004_old_Data_Dictionary"
+
+_DATE_GLOB = "[0-9]" * 8
+
 
 def log(msg: str = "") -> None:
     print(msg, flush=True)
+
+
+def build_output(stem: str, ext: str = ".tab", date: str | None = None,
+                 where: str | None = None) -> str:
+    """Path to write a dated build artefact to."""
+    return os.path.join(where or _HERE, f"{stem}_{date or BUILD_DATE}{ext}")
+
+
+def find_build(stem: str, ext: str = ".tab", where: str | None = None) -> str | None:
+    """Newest dated artefact for `stem`, or the undated legacy name, or None.
+
+    Dated names sort chronologically (see BUILD_DATE), so the last glob hit is the
+    most recent build. Falls back to the pre-2026-08-15 undated filename so an
+    existing release stays readable without being renamed.
+    """
+    d = where or _HERE
+    hits = sorted(glob.glob(os.path.join(d, f"{stem}_{_DATE_GLOB}{ext}")))
+    if hits:
+        return hits[-1]
+    legacy = os.path.join(d, f"{stem}{ext}")
+    return legacy if os.path.exists(legacy) else None
+
+
+def require_build(stem: str, ext: str = ".tab", where: str | None = None) -> str:
+    """`find_build`, but exit with an actionable message rather than returning None."""
+    hit = find_build(stem, ext, where)
+    if hit is None:
+        sys.exit(f"ERROR: no {stem}*{ext} in {where or _HERE} — run build_step_7 first")
+    return hit
 
 
 def _scrub(s: pd.Series, findings: list, source: str, col: str) -> pd.Series:

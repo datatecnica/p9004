@@ -5,14 +5,18 @@ strict 1:1 correspondence with the dataset columns.
 
 Dictionary sources, in priority order per column:
   1. the curated cut's own dictionary          (clinical, 212 entries — authoritative)
-  2. generated entries                         (p9001, key, PCs, corrected derivations)
+  2. generated entries                         (p9005, key, PCs, corrected derivations)
   3. the previous release's dictionary         (proteomics, plate IDs, join artifacts,
                                                 and the derived variables unchanged here)
 
 Outputs:
-  Project_9004_Unified_Emerging_Biomarkers.tab
-  Project_9004_Data_Dictionary.tab
-  Project_9004_Data_Dictionary.xlsx     (one row per entry; see note at the bottom)
+  Project_9004_Unified_Emerging_Biomarkers_<YYYYMMDD>.tab
+  Project_9004_Data_Dictionary_<YYYYMMDD>.tab
+  Project_9004_Data_Dictionary_<YYYYMMDD>.xlsx   (one row per entry; see the bottom note)
+
+The <YYYYMMDD> stamp is the build date, so a release identifies itself and two builds
+can coexist. Consumers resolve their input via build_common.find_build(), which takes
+the newest stamp and falls back to the older undated filename.
 """
 
 from __future__ import annotations
@@ -23,7 +27,8 @@ import sys
 
 import pandas as pd
 
-from build_common import TIMESTAMP, log
+from build_common import (BUILD_DATE, DATASET_STEM, DICT_STEM, TIMESTAMP,
+                          build_output, find_build, log)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "build_intermediates")
@@ -70,12 +75,12 @@ def entry(**kw) -> dict:
     }
 
 
-def build_p9001_entries(cols: list[str]) -> list[dict]:
+def build_p9005_entries(cols: list[str]) -> list[dict]:
     """Entries for the new GP2 release-12 genetics block."""
     out = []
-    n_snps = sum(1 for c in cols if c.startswith("p9001_rs"))
+    n_snps = sum(1 for c in cols if c.startswith("p9005_rs"))
     for c in cols:
-        stem = c[len("p9001_"):]
+        stem = c[len("p9005_"):]
         if stem.startswith("Genetic_PRS_PRS"):
             n = stem.replace("Genetic_PRS_PRS", "")
             out.append(entry(
@@ -85,7 +90,7 @@ def build_p9001_entries(cols: list[str]) -> list[dict]:
                 notes=("One of four PRS variants shipped in the GP2 release-12 file (PRS157, "
                        f"PRS154, PRS152, PRS149); the file carries {n_snps} rs-dosage columns. "
                        "The variant sets behind each suffix are described in detail in the "
-                       "Project 9001 documentation — consult it before choosing between them, "
+                       "Project 9005 documentation — consult it before choosing between them, "
                        "as they are not interchangeable.")))
         elif stem.startswith("Genetic_PRS_PC"):
             n = stem.replace("Genetic_PRS_PC", "")
@@ -286,9 +291,9 @@ def main() -> None:
     log(f"=== Step 7: dataset + dictionary ===  timestamp {TIMESTAMP}"
         f"{'  [--dict-only]' if dict_only else ''}")
 
-    f_data_existing = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
+    f_data_existing = find_build(DATASET_STEM)
     if dict_only:
-        if not os.path.exists(f_data_existing):
+        if f_data_existing is None:
             sys.exit("--dict-only needs an existing dataset to read the column order from")
         cols = pd.read_csv(f_data_existing, sep="\t", nrows=0).columns.tolist()
         df = pd.DataFrame(columns=cols)
@@ -329,8 +334,8 @@ def main() -> None:
     for _, r in scaffold_dict.iterrows():             # clinical is authoritative
         lookup[r["Variable"]] = r[DICT_COLS].to_dict()
 
-    p9001_cols = [c for c in df.columns if c.startswith("p9001_")]
-    for e in build_p9001_entries(p9001_cols):
+    p9005_cols = [c for c in df.columns if c.startswith("p9005_")]
+    for e in build_p9005_entries(p9005_cols):
         lookup[e["Variable"]] = e
 
     variance = pd.read_csv(latest("pc_variance-*.tab"), sep="\t")
@@ -365,9 +370,11 @@ def main() -> None:
         log(f"  {k:16s} {v:,}")
 
     # --- write -------------------------------------------------------------
-    f_data = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
-    f_dict = os.path.join(HERE, "Project_9004_Data_Dictionary.tab")
-    f_xlsx = os.path.join(HERE, "Project_9004_Data_Dictionary.xlsx")
+    # Dated outputs (YYYYMMDD) — see build_common.BUILD_DATE.
+    f_data = build_output(DATASET_STEM, ".tab")
+    f_dict = build_output(DICT_STEM, ".tab")
+    f_xlsx = build_output(DICT_STEM, ".xlsx")
+    log(f"\nbuild date stamp: {BUILD_DATE}")
 
     if not dict_only:
         log(f"\nwriting {os.path.basename(f_data)} ...")

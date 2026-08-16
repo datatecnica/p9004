@@ -2,8 +2,9 @@
 #
 # Derived from ../adding_p312_and_P314/batch.yaml. Changes from that config:
 #   * input is the rebuilt Project 9004 dataset (19,450 rows x 35,566 cols)
-#   * ancestry strata and genetic PCs come from Project 9001 (GP2 release 12)
-#   * PRS is p9001_Genetic_PRS_PRS157 (r=0.992 with the retired GP2_PRS_zscore)
+#   * ancestry strata and genetic PCs come from Project 9005, formerly numbered 9001
+#     (GP2 release 12); the block prefix is p9005_ as of 2026-08-15
+#   * PRS is p9005_Genetic_PRS_PRS157 (r=0.992 with the retired GP2_PRS_zscore)
 #   * collection_era added as a covariate — see the note on default_covariates
 #   * proteome-wide Bonferroni over 9,500 independent proteins (n_independent_proteins)
 #
@@ -17,11 +18,13 @@
 defaults:
   # Read the Projects 312/314 dataset from the parent directory; all outputs
   # (results/, meta/, plots/) resolve relative to THIS config's directory.
-  input_glob: "Project_9004_Unified_Emerging_Biomarkers.tab"
+  # Dated releases; regressions.py takes sorted(glob)[-1], and the YYYYMMDD stamp makes
+  # that the newest build. Pin the exact filename here to fit an older release instead.
+  input_glob: "Project_9004_Unified_Emerging_Biomarkers_*.tab"
   output_dir: "results"
-  strata_col: p9001_Genetic_PRS_InfPop
+  strata_col: p9005_Genetic_PRS_InfPop
   strata: [EUR, AJ]
-  # Genetic PCs now come from Project 9001 (3,676 participants vs GP2's 2,620).
+  # Genetic PCs now come from Project 9005 (3,676 participants vs GP2's 2,620).
   #
   # collection_era is global rather than targeted. The intent was to adjust only where
   # Project 277 contributes, but every run loops ALL proteomic prefixes, so p277_CSF and
@@ -32,8 +35,8 @@ defaults:
   # than useless (lambda 1.731 vs 1.459) because it extrapolates through single-arm years.
   # Cost elsewhere is one df. Drop it per-run via drop_covariates for a sensitivity check.
   default_covariates: [age_at_visit, EDUCYRS, SEX, collection_era,
-                       p9001_Genetic_PRS_PC1, p9001_Genetic_PRS_PC2, p9001_Genetic_PRS_PC3,
-                       p9001_Genetic_PRS_PC4, p9001_Genetic_PRS_PC5]
+                       p9005_Genetic_PRS_PC1, p9005_Genetic_PRS_PC2, p9005_Genetic_PRS_PC3,
+                       p9005_Genetic_PRS_PC4, p9005_Genetic_PRS_PC5]
   # Effective independent proteins for the proteome-wide Bonferroni lens.
   n_independent_proteins: 9500
   random_group: PATNO
@@ -415,11 +418,11 @@ runs:
   # -------------------------------------------------------------------------
   - name: slope_moca_x_PRS
     model: ols
-    formula: "slope_moca ~ PROTEIN * p9001_Genetic_PRS_PRS157"
-    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    formula: "slope_moca ~ PROTEIN * p9005_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9005_Genetic_PRS_PRS157"
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "slope_moca.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "slope_moca.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
@@ -428,11 +431,11 @@ runs:
 
   - name: slope_updrs3_off_x_PRS
     model: ols
-    formula: "slope_updrs3_off ~ PROTEIN * p9001_Genetic_PRS_PRS157"
-    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    formula: "slope_updrs3_off ~ PROTEIN * p9005_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9005_Genetic_PRS_PRS157"
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "slope_updrs3_off.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "slope_updrs3_off.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
@@ -441,11 +444,11 @@ runs:
 
   - name: slope_updrs3_off_x_PRS_LEDD_adj
     model: ols
-    formula: "slope_updrs3_off ~ PROTEIN * p9001_Genetic_PRS_PRS157"
-    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    formula: "slope_updrs3_off ~ PROTEIN * p9005_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9005_Genetic_PRS_PRS157"
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "slope_updrs3_off.notna() and p9001_Genetic_PRS_PRS157.notna() and LEDD.notna() and COHORT == 1"
+    sample_filter: "slope_updrs3_off.notna() and p9005_Genetic_PRS_PRS157.notna() and LEDD.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
@@ -455,11 +458,11 @@ runs:
   # OLS slope on lowput-ratio with PRS interaction.
   - name: slope_lowput_ratio_x_PRS
     model: ols
-    formula: "slope_lowput_ratio ~ PROTEIN * p9001_Genetic_PRS_PRS157"
-    report_term: "PROTEIN:p9001_Genetic_PRS_PRS157"
+    formula: "slope_lowput_ratio ~ PROTEIN * p9005_Genetic_PRS_PRS157"
+    report_term: "PROTEIN:p9005_Genetic_PRS_PRS157"
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "slope_lowput_ratio.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "slope_lowput_ratio.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
@@ -468,120 +471,120 @@ runs:
 
   # Cox PRS-interaction runs use the `interaction_with` key (not formula
   # syntax — lifelines doesn't take formulas). The script builds an inline
-  # `predictor:p9001_Genetic_PRS_PRS157` design column, includes both main effects,
+  # `predictor:p9005_Genetic_PRS_PRS157` design column, includes both main effects,
   # and reports the interaction coef as the primary β/SE/P. The PRS main
   # effect must be in add_covariates.
   - name: cox_moca_lt26_x_PRS
     model: cox
     duration_col: tte_moca_lt26_years
     event_col: event_moca_lt26
-    interaction_with: p9001_Genetic_PRS_PRS157
+    interaction_with: p9005_Genetic_PRS_PRS157
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "tte_moca_lt26_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "tte_moca_lt26_years.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+    add_covariates: [disease_duration_years, p9005_Genetic_PRS_PRS157]
 
   - name: cox_cogstate_worsen_x_PRS
     model: cox
     duration_col: tte_cogstate_worsen_years
     event_col: event_cogstate_worsen
-    interaction_with: p9001_Genetic_PRS_PRS157
+    interaction_with: p9005_Genetic_PRS_PRS157
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "tte_cogstate_worsen_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "tte_cogstate_worsen_years.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+    add_covariates: [disease_duration_years, p9005_Genetic_PRS_PRS157]
 
   - name: cox_pm_any_x_PRS
     model: cox
     duration_col: tte_pm_any_years
     event_col: event_pm_any
-    interaction_with: p9001_Genetic_PRS_PRS157
+    interaction_with: p9005_Genetic_PRS_PRS157
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "tte_pm_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "tte_pm_any_years.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+    add_covariates: [disease_duration_years, p9005_Genetic_PRS_PRS157]
 
   - name: cox_pm_cog_any_x_PRS
     model: cox
     duration_col: tte_pm_cog_any_years
     event_col: event_pm_cog_any
-    interaction_with: p9001_Genetic_PRS_PRS157
+    interaction_with: p9005_Genetic_PRS_PRS157
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "tte_pm_cog_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "tte_pm_cog_any_years.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+    add_covariates: [disease_duration_years, p9005_Genetic_PRS_PRS157]
 
   - name: cox_pm_mc_any_x_PRS
     model: cox
     duration_col: tte_pm_mc_any_years
     event_col: event_pm_mc_any
-    interaction_with: p9001_Genetic_PRS_PRS157
+    interaction_with: p9005_Genetic_PRS_PRS157
     # PD-only: this is a disease progression readout, and disease_duration_years
     # is undefined for HC/prodromal so it can only be adjusted for within cases.
-    sample_filter: "tte_pm_mc_any_years.notna() and p9001_Genetic_PRS_PRS157.notna() and COHORT == 1"
+    sample_filter: "tte_pm_mc_any_years.notna() and p9005_Genetic_PRS_PRS157.notna() and COHORT == 1"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years, p9001_Genetic_PRS_PRS157]
+    add_covariates: [disease_duration_years, p9005_Genetic_PRS_PRS157]
 
   - name: cox_stage_d_x_PRS
     model: cox
     duration_col: tte_stage_d_years
     event_col: event_stage_d
-    interaction_with: p9001_Genetic_PRS_PRS157
-    sample_filter: "tte_stage_d_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    interaction_with: p9005_Genetic_PRS_PRS157
+    sample_filter: "tte_stage_d_years.notna() and p9005_Genetic_PRS_PRS157.notna()"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [p9001_Genetic_PRS_PRS157]
+    add_covariates: [p9005_Genetic_PRS_PRS157]
 
   - name: cox_nsd_2a_to_later_x_PRS
     model: cox
     duration_col: tte_nsd_2a_to_later_years
     event_col: event_nsd_2a_to_later
-    interaction_with: p9001_Genetic_PRS_PRS157
-    sample_filter: "tte_nsd_2a_to_later_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    interaction_with: p9005_Genetic_PRS_PRS157
+    sample_filter: "tte_nsd_2a_to_later_years.notna() and p9005_Genetic_PRS_PRS157.notna()"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [p9001_Genetic_PRS_PRS157]
+    add_covariates: [p9005_Genetic_PRS_PRS157]
 
   - name: cox_nsd_2b_to_later_x_PRS
     model: cox
     duration_col: tte_nsd_2b_to_later_years
     event_col: event_nsd_2b_to_later
-    interaction_with: p9001_Genetic_PRS_PRS157
-    sample_filter: "tte_nsd_2b_to_later_years.notna() and p9001_Genetic_PRS_PRS157.notna()"
+    interaction_with: p9005_Genetic_PRS_PRS157
+    sample_filter: "tte_nsd_2b_to_later_years.notna() and p9005_Genetic_PRS_PRS157.notna()"
     # One row per participant at their earliest visit carrying the predictor,
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [p9001_Genetic_PRS_PRS157]
+    add_covariates: [p9005_Genetic_PRS_PRS157]
 
   # -------------------------------------------------------------------------
   # Aim 3 — Longitudinal trajectories by group (protein on LHS, interaction on RHS)
   #
   # Only time-varying predictors are valid LMM outcomes here. APOE_e4 and
-  # p9001_Genetic_PRS_PRS157 are static per-patient and belong in the baseline runs
+  # p9005_Genetic_PRS_PRS157 are static per-patient and belong in the baseline runs
   # above, not in trajectories — hence `predictors: proteomic` (not `both`).
   # The 12 other non-proteomic biomarkers are also time-varying (measured at
   # multiple visits) and can be added via `predictors: both` if desired, but

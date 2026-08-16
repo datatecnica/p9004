@@ -93,7 +93,7 @@ def main() -> None:
 
     # --- genetics blocks ---------------------------------------------------
     patno_index = pd.Index(scaffold["PATNO"])
-    for label, pattern in (("GP2", "genetics_gp2-*.tab"), ("p9001", "genetics_p9001-*.tab")):
+    for label, pattern in (("GP2", "genetics_gp2-*.tab"), ("p9005", "genetics_p9005-*.tab")):
         g = pd.read_csv(latest(pattern), sep="\t", low_memory=False, dtype={"PATNO": str})
         p, f = make_patno(g, source=label)
         assert_no_fatal(f)

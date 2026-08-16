@@ -41,10 +41,12 @@ import pandas as pd
 import statsmodels.api as sm
 from scipy import stats
 
+from build_common import DATASET_STEM, require_build
+
 warnings.filterwarnings("ignore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "Project_9004_Unified_Emerging_Biomarkers.tab")
+DATA = require_build(DATASET_STEM)
 REPORT = os.path.join(HERE, "harmonization_positive_controls.md")
 
 # (block, project_1, project_2) — reference is chosen at runtime as whichever has more rows
