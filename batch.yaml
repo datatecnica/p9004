@@ -65,6 +65,16 @@ defaults:
   # rather than a refit. Raising it here prunes hard: 3 -> 68% of rows, 5 -> 46%,
   # 10 -> 12% (which would leave AJ represented by cox_pm_any alone). 0 disables.
   min_events_per_param: 2
+  # Minimum analytes a run/stratum must retain for its CSV to be written. The per-
+  # analyte guards above are all local decisions and nothing was totalling what they
+  # left behind; the run-wide Bonferroni denominator is exactly that total, so a
+  # collapsed run judges its few survivors against a threshold orders of magnitude
+  # looser than a full run, and meta_analysis pools it as if it were healthy. On
+  # 2026-08-20 cox_nsd_2b_to_later_x_PRS|AJ kept 2 of 11,581 analytes and called
+  # APOE_e4 significant at a threshold of 2.5e-02 against 4.32e-06 elsewhere.
+  # 100 sits in the empty gap between the collapsed runs (2-8) and the smallest
+  # healthy one (10,556 of 11,581).
+  min_analytes_per_run: 100
   # Effective independent proteins for the proteome-wide Bonferroni lens.
   n_independent_proteins: 9500
   random_group: PATNO

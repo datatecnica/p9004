@@ -222,6 +222,15 @@ MIN_EVENTS_PER_PARAM_DEFAULT = 2
 # 32-run Cox batch; batching amortises the IPC that would otherwise dominate at that
 # fit cost. OLS/Logit stay serial -- they finish in ~2 minutes, less than the fork and
 # copy-on-write warm-up would cost.
+# Minimum analytes a run/stratum must retain after all filtering for its CSV to be
+# written. Guards the run-wide Bonferroni denominator, which is computed from exactly
+# this count -- see the note at the write site. 100 sits in the empty gap between the
+# degenerate runs on the 2026-08-20 batch (2-8 analytes) and the smallest healthy one
+# (10,556 of 11,581), so it discards only collapsed runs. It is an absolute count
+# rather than a fraction because that is the idiom of the other guards here; the
+# companion warning at the write site covers proportional loss above the floor.
+MIN_ANALYTES_PER_RUN_DEFAULT = 100
+
 PARALLEL_MODELS = ("lmm", "cox")
 CHUNKSIZE_BY_MODEL = {"lmm": 1, "cox": 64}
 
@@ -922,6 +931,10 @@ def _earliest_visit_index(work: pd.DataFrame, pred: str, patno_values) -> pd.Ind
 # Never mutated by a worker.
 _LOOP_STATE: dict[str, Any] = {}
 
+# Predictors offered by the most recent run_one call, so run_all can report what
+# fraction of them survived filtering. Single-slot; set once per run/stratum.
+_LAST_N_OFFERED = 0
+
 # Why the most recent `_fit_one_predictor` call produced no rows. Written by that
 # function, read once by `_fit_and_label`, which ships it back to the parent so the
 # tally is identical on the serial and fork paths. Single-slot and reset per analyte.
@@ -1094,6 +1107,8 @@ def run_one(
     pred_spec = spec.get("predictors", defaults.get("predictors", "both"))
     new_preds = defaults.get("new_predictors", NEW_PREDICTORS)
     predictors = resolve_predictors(work, pred_spec, new_preds, assay_prefixes)
+    global _LAST_N_OFFERED
+    _LAST_N_OFFERED = len(predictors)
     log.info(f"  [{label}|{strata_val}] {len(predictors)} predictors to fit")
 
     # Covariates
@@ -1543,6 +1558,8 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None,
             resume: bool = False, n_workers: int = 1) -> None:
     defaults = config.get("defaults", {})
     output_dir = defaults.get("output_dir", "results")
+    min_analytes = int(defaults.get("min_analytes_per_run",
+                                    MIN_ANALYTES_PER_RUN_DEFAULT))
     os.makedirs(os.path.join(cwd, output_dir), exist_ok=True)
 
     strata_col = defaults.get("strata_col")
@@ -1627,6 +1644,31 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None,
             if results.empty:
                 log.warning(f"  [{name}|{sv}] no results after filtering; no CSV written")
                 continue
+
+            # Surviving-analyte floor. The per-analyte guards (min_n, min_events_per_
+            # param, numerical-failure filtering) are all local decisions, and nothing
+            # was watching the total they leave behind. When almost everything is
+            # filtered the run-wide Bonferroni denominator collapses with it, so the
+            # few survivors are judged against a threshold orders of magnitude more
+            # lenient than every comparable run -- and the CSV is indistinguishable
+            # from a healthy one to meta_analysis.discover_runs, which pools whatever
+            # it finds. On 2026-08-20 cox_nsd_2b_to_later_x_PRS|AJ kept 2 of 11,581
+            # analytes and reported APOE_e4 at P=0.0030 as proteome-wide significant
+            # against a threshold of 2.50e-02, ~5,800x looser than the 4.32e-06 used
+            # everywhere else. Counted over ANALYTES, not rows, because a decomposed
+            # LMM emits two rows per analyte.
+            n_offered = _LAST_N_OFFERED
+            n_kept = int(results["analyte"].nunique()) if "analyte" in results else len(results)
+            if n_kept < min_analytes:
+                log.warning(f"  [{name}|{sv}] only {n_kept:,} analytes survived filtering "
+                            f"(floor is min_analytes_per_run={min_analytes:,}); no CSV "
+                            f"written — its Bonferroni denominator would be meaningless")
+                continue
+            # Above the floor but still a large loss: worth seeing, not worth discarding.
+            if n_offered and n_kept < 0.5 * n_offered:
+                log.warning(f"  [{name}|{sv}] kept {n_kept:,} of {n_offered:,} analytes "
+                            f"({100.0 * n_kept / n_offered:.1f}%) — Bonferroni denominator "
+                            f"is not comparable to a full run")
 
             out = os.path.join(cwd, output_dir, f"{name}-{suffix}-{timestamp}.csv")
             results.to_csv(out, index=False)
