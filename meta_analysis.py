@@ -351,8 +351,19 @@ def combine_run(run_name: str, files: list[tuple[str, str, str]]) -> pd.DataFram
 
     bad = meta_df.get("degenerate", pd.Series(False, index=meta_df.index)).fillna(False).astype(bool)
     ctrl = meta_df.get("is_control", pd.Series(False, index=meta_df.index)).fillna(False).astype(bool)
+    # Replication is a precondition, not one guard among several. Every other term
+    # here is vacuously satisfied by a single-stratum row: `strata_concordant` is
+    # trivially true with one direction to compare, `stratum_dominated` is explicitly
+    # gated on n_studies > 1, `low_variance` is LMM-only and `thin_within` fires only
+    # on within-terms. So without this an unreplicated result inherits the "robust"
+    # label -- on the 2026-08-20 batch, 14 rows across the seven EUR-only run groups
+    # (AJ too small to fit) came out robust_FE=True off a single stratum, including
+    # four significant hits. n_studies is the count of strata that actually
+    # contributed an estimate for THIS analyte, so it also catches per-analyte
+    # single-stratum rows inside an otherwise two-stratum run group.
     meta_df["robust_FE"] = (
-        meta_df["significant_FE_family"]
+        (meta_df["n_studies"] >= 2)
+        & meta_df["significant_FE_family"]
         & meta_df["strata_concordant"]
         & ~meta_df["stratum_dominated"]
         & ~bad & ~ctrl & ~low_var & ~meta_df["thin_within"]
