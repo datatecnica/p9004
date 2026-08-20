@@ -750,7 +750,12 @@ def fit_cox(
         sys.exit("ERROR: lifelines not installed. Run: pip install -r requirements.txt")
     if interaction_with == predictor_col:
         # Self-interaction (e.g. the PRS crossed with itself) is degenerate
-        # — skip rather than emit a quadratic-term row.
+        # — skip rather than emit a quadratic-term row. Tallied under its own
+        # status, not `fit_failed`: nothing was attempted and nothing went wrong,
+        # and every _x_PRS run hits this exactly once when the loop reaches the
+        # interaction variable itself. Counting it as a failure is the same
+        # category confusion the outcome tally exists to prevent.
+        _FIT_STATUS["reason"] = "self_interaction"
         return None
     cols = [duration_col, event_col, predictor_col] + [c for c in covariates if c != predictor_col]
     if interaction_with and interaction_with not in cols:
@@ -944,7 +949,8 @@ _FIT_STATUS: dict[str, str] = {}
 # an analyte that never converged is indistinguishable from one that was never
 # applicable: both simply produce no row. The 2026-08-15 NSD_vs_notNSD_LRRK2|EUR run
 # lost 34,377 of 34,916 analytes this way and still logged "wrote 519 rows".
-FIT_OUTCOMES = ("ok", "ok_no_assay_pcs", "below_min_n", "thin_events", "fit_failed")
+FIT_OUTCOMES = ("ok", "ok_no_assay_pcs", "below_min_n", "thin_events",
+                "self_interaction", "fit_failed")
 
 
 def _fit_and_label(pred: str) -> dict:
