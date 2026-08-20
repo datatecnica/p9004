@@ -37,6 +37,21 @@ defaults:
   default_covariates: [age_at_visit, EDUCYRS, SEX, collection_era,
                        p9005_Genetic_PRS_PC1, p9005_Genetic_PRS_PC2, p9005_Genetic_PRS_PC3,
                        p9005_Genetic_PRS_PC4, p9005_Genetic_PRS_PC5]
+  # Run only the six harmonized blocks as proteomic predictors (2026-08-18). Each
+  # harmonized column pools the two projects that ran the same platform x panel x
+  # biofluid, so it covers MORE participants than either source project alone —
+  # e.g. harmonized_nulisa_inf_csf carries 772 in sPD_vs_LRRK2 against p282's 606.
+  # Cuts 34,902 analytes to 11,567 (3.0x less compute, and no double-counting between
+  # a harmonized column and the project it contains).
+  #
+  # Caveat: harmonized is a superset in PARTICIPANTS but a subset in ANALYTES, since
+  # each block's core is the intersection of its two projects. 201 analytes have no
+  # harmonized counterpart and are no longer tested — 94 from p312_Neuro_Plasma and
+  # 84 from p312_Neuro_CSF (the Neuro panel is wider than the CNS panel it pairs
+  # with, so AQP4, ATXN2/3, AXL, BCAN and the BD-pTau-T205/T212 species drop out),
+  # 15 from p293_olink_plasma, and Abeta-38/40/42 from p288_CNS_plasma.
+  # Set to `all` to test every project block instead.
+  proteomic_scope: harmonized
   # Effective independent proteins for the proteome-wide Bonferroni lens.
   n_independent_proteins: 9500
   random_group: PATNO
@@ -76,7 +91,13 @@ runs:
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years]
+    # NO disease_duration_years here (removed 2026-08-18). The outcome is whether the
+    # participant is NSD+, and disease duration only exists for someone who has a
+    # disease — it was present for 91% of NSD+ but 31% of NSD- in EUR (81% vs 19% in
+    # AJ). Complete-case deletion therefore removed the control arm preferentially,
+    # inverting the case:control ratio and halving N. See the note on
+    # NSD_vs_notNSD_LRRK2 below. The PD-restricted runs further down keep it: there
+    # both arms have a disease, so it is defined by construction.
 
   - name: NSD_vs_notNSD_LRRK2
     model: logit
@@ -87,7 +108,14 @@ runs:
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years]
+    # NO disease_duration_years here (removed 2026-08-18). It is a post-outcome
+    # variable in an NSD+/NSD- contrast: present for 91% of NSD+ but only 31% of NSD-
+    # in EUR (81% vs 19% in AJ), because duration is undefined for an unaffected
+    # carrier. Adjusting for it dropped EUR from 107 analyzable participants to 52 and
+    # AJ from 232 to 91, and flipped the case:control ratio from 0.43 to 1.26 (EUR)
+    # and 0.50 to 2.14 (AJ) — i.e. it selected the sample on a proxy for the outcome.
+    # Downstream, N~38 against 16 parameters put every Olink fit into quasi-complete
+    # separation, and the 2026-08-15 run wrote 519 rows out of 34,916 analytes.
 
   - name: NSD_vs_notNSD_GBA
     model: logit
@@ -98,7 +126,8 @@ runs:
     # rather than EVENT_ID == BL. Project 312 was sampled at V08-V16, so a
     # BL restriction left it 6-16 participants instead of 169-266.
     visit_mode: earliest_with_predictor
-    add_covariates: [disease_duration_years]
+    # NO disease_duration_years here (removed 2026-08-18) — same post-outcome problem
+    # as the two runs above. See the note on NSD_vs_notNSD_LRRK2.
 
   - name: NSD_vs_notNSD_prodromal
     model: logit

@@ -13,6 +13,7 @@ Bonferroni is 0.05 / N_fitted after numerical-failure filtering.
 
 Usage:
     python3 regressions.py --config batch.yaml [--run run_name] [--resume]
+                          [--workers N]
 
 Design mirrors ../LRRK2-April2026/lrrk2_regressions.py for OLS/Logit/LMM math
 (z-scoring, 3-tier LMM fallback, same numerical-failure filter, λ per run/assay);
@@ -22,14 +23,31 @@ Cox is added via lifelines.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import glob
 import logging
+import multiprocessing as mp
 import os
 import re
 import sys
 import warnings
 from datetime import datetime
 from typing import Any
+
+# Pin BLAS to one thread per process, BEFORE numpy/scipy import — OpenBLAS reads
+# these at load time, and a forked worker inherits whatever the parent set up.
+#
+# Every fit here is small (n ~ 2,600 rows x 13 parameters), far below the size at
+# which threaded GEMM pays for its synchronisation: 16 threads measured 2.93 s/fit
+# against 2.61 s/fit at one thread. The 2026-08-15 batch ran at ~2 of 16 cores for
+# exactly this reason — OpenBLAS spilling onto a second core for no gain. Cores are
+# worth far more spent on independent analytes (see --workers), and 14 workers each
+# spawning 16 BLAS threads would oversubscribe the machine 14x.
+#
+# An explicit setting in the environment wins, so this can still be overridden.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 
 import numpy as np
 import pandas as pd
@@ -86,6 +104,25 @@ ASSAY_PREFIXES = [
     "harmonized_nulisa_inf_plasma",
     "harmonized_nulisa_inf_csf",
 ]
+
+# The six harmonized blocks, in the same order as above. Each pools the two projects
+# that ran the same platform x panel x biofluid onto the larger project's scale, so a
+# harmonized column covers MORE PARTICIPANTS than either source project alone.
+HARMONIZED_PREFIXES = [p for p in ASSAY_PREFIXES if p.startswith("harmonized_")]
+
+# `defaults.proteomic_scope` selects which prefixes count as proteomic predictors:
+#
+#   all         every prefix above (34,902 analytes on the 2026-08-15 release)
+#   harmonized  the six harmonized blocks only (11,567), plus the non-proteomic
+#               predictors, which are unaffected either way
+#
+# `harmonized` is a superset of the source projects in PARTICIPANTS but a subset in
+# ANALYTES: each block's core is the INTERSECTION of its two projects, so an analyte
+# only one project measured has no harmonized counterpart. On the 2026-08-15 release
+# that orphans 201 analytes -- 94 from p312_Neuro_Plasma and 84 from p312_Neuro_CSF
+# (the Neuro panel is wider than the CNS panel it pairs with), 15 from
+# p293_olink_plasma, and Abeta-38/40/42 from p288_CNS_plasma. Use `all` to keep them.
+PROTEOMIC_SCOPES = ("all", "harmonized")
 
 # Effective number of independent proteins across the whole panel set, used as the
 # denominator for the proteome-wide Bonferroni lens. A raw analyte count is the wrong
@@ -221,10 +258,88 @@ def resolve_input_path(input_glob: str, cwd: str) -> str:
     return candidates[-1]
 
 
-def load_data(path: str) -> pd.DataFrame:
+# Rows per chunk in the streaming load. 2,000 keeps the tokenizer's full-width buffer
+# small while leaving few enough chunks that the concat is cheap; see load_data.
+LOAD_CHUNK_ROWS = 2000
+
+
+def _release_free_memory() -> None:
+    """Ask glibc to return free arena memory to the OS.
+
+    Python freeing a buffer does not shrink RSS -- glibc keeps it in the arena. After
+    the load that is ~1.8 GB of held-but-unused memory, which every forked LMM worker
+    would otherwise inherit. No-op on platforms without glibc's malloc_trim.
+    """
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
+def read_header(path: str) -> list[str]:
+    """Column names only, without reading a single data row."""
+    with open(path) as fh:
+        return fh.readline().rstrip("\n").split("\t")
+
+
+def load_data(path: str, prefixes: list[str] | None = None) -> pd.DataFrame:
+    """Read the release into memory, keeping only the in-scope analyte columns.
+
+    Memory, not CPU, is the binding constraint: the release is ~19,451 rows x 35,566
+    columns, of which 34,902 are analytes, and a full load is a ~5.6 GB frame with a
+    peak well above that. That ceiling is what held the 2026-08-15 batch to a single
+    process on a 31 GB machine while it used 2 of 16 cores.
+
+    `prefixes` (from `defaults.proteomic_scope`) drops the analyte columns no run will
+    look at. EVERY non-analyte column is kept unconditionally -- there are only 664 of
+    them and they carry the clinical scaffold, covariates, outcomes, strata and the
+    assay/genetic PCs, so narrowing by scope cannot cost a run a column it needs. Under
+    scope=harmonized that is 12,231 columns instead of 35,566, a 2.91x cut.
+
+    Read in row chunks and concatenated, which is what keeps the PEAK down: the C
+    tokenizer buffers the full file width regardless of `usecols`, so a single-shot
+    read spikes far above the resulting frame. Measured on the full release at
+    scope=harmonized -- 19,450 rows x 12,231 columns, a 1.77 GB frame:
+
+        single-shot   peak 14.30 GB   33 s
+        chunked       peak  3.89 GB   23 s   <- this path
+
+    The chunked frame is bit-identical to the single-shot one: same 12,231 columns,
+    zero dtype differences, zero value or NaN-placement differences. (Chunked reads
+    can otherwise infer dtypes per chunk, so this was verified, not assumed.)
+
+    Finally `malloc_trim`, because glibc holds freed arena memory rather than
+    returning it: without it the loaded process sits at 3.74 GB against a 1.77 GB
+    frame, with it at 1.95 GB. That matters because the LMM worker pool forks from
+    this process -- every GB resident here is a GB each worker inherits.
+
+    NOT the pyarrow CSV engine, despite it being the obvious lever. Its default 1 MB
+    `block_size` is smaller than ~9 rows of a file this wide (~120 KB per row), so it
+    builds ~2,200 blocks x 35,566 columns of Arrow chunks, each with 64-byte-aligned
+    buffers -- tens of GB of allocator padding on the full file. On a 2,000-row slice
+    it measured 3.4x the peak memory of the C engine and 14x the wall time, and it is
+    what took the WSL VM down on 2026-08-18.
+
+    NOT float32: halving the analyte dtype would halve memory again, but it would also
+    change fitted coefficients in the last significant figures, so runs from before and
+    after the change could not be pooled. Dropping unread columns is free of that.
+    """
     log.info(f"Loading dataset: {os.path.basename(path)}")
-    df = pd.read_csv(path, sep="\t", low_memory=False)
-    log.info(f"  {df.shape[0]:,} rows x {df.shape[1]:,} cols")
+    usecols = None
+    if prefixes is not None:
+        cols = read_header(path)
+        in_scope = set(list_proteomic_columns_from_names(cols, prefixes))
+        usecols = [c for c in cols
+                   if c in in_scope or not _is_analyte(c)]
+        log.info(f"  reading {len(usecols):,} of {len(cols):,} columns "
+                 f"({len(cols) - len(usecols):,} out-of-scope analytes skipped)")
+    chunks = pd.read_csv(path, sep="\t", low_memory=False, usecols=usecols,
+                         chunksize=LOAD_CHUNK_ROWS)
+    df = pd.concat(list(chunks), ignore_index=True)
+    del chunks
+    _release_free_memory()
+    log.info(f"  {df.shape[0]:,} rows x {df.shape[1]:,} cols "
+             f"({df.memory_usage(deep=False).sum() / 1024**3:.2f} GB)")
     return df
 
 
@@ -232,8 +347,41 @@ def load_data(path: str) -> pd.DataFrame:
 # Predictor & covariate resolution
 # ============================================================================
 
-def list_proteomic_columns(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c.endswith("_NPX") or c.endswith("_NPQ")]
+def scoped_assay_prefixes(scope: str) -> list[str]:
+    """Assay prefixes a given `defaults.proteomic_scope` admits. See PROTEOMIC_SCOPES."""
+    if scope == "all":
+        return list(ASSAY_PREFIXES)
+    if scope == "harmonized":
+        return list(HARMONIZED_PREFIXES)
+    sys.exit(f"ERROR: unknown proteomic_scope '{scope}'; expected one of {PROTEOMIC_SCOPES}")
+
+
+def _is_analyte(col: str) -> bool:
+    """The _NPX/_NPQ suffix is what makes a column a proteomic analyte."""
+    return col.endswith("_NPX") or col.endswith("_NPQ")
+
+
+def list_proteomic_columns_from_names(names: list[str],
+                                      prefixes: list[str] | None = None) -> list[str]:
+    """Analyte columns among `names`, optionally restricted to `prefixes`.
+
+    Name-based so `load_data` can apply the same rule to a bare header line, before
+    any frame exists -- the scope filter has to be decided before the read, not after.
+    """
+    cols = [c for c in names if _is_analyte(c)]
+    if prefixes is None:
+        return cols
+    return [c for c in cols if any(c.startswith(p + "_") for p in prefixes)]
+
+
+def list_proteomic_columns(df: pd.DataFrame,
+                           prefixes: list[str] | None = None) -> list[str]:
+    """Proteomic analyte columns of `df`, optionally restricted to `prefixes`.
+
+    The prefix filter is what `proteomic_scope` uses to narrow which assays are in
+    play. With prefixes=None every analyte column is returned (historical behaviour).
+    """
+    return list_proteomic_columns_from_names(list(df.columns), prefixes)
 
 
 def proteomic_assay_map(cols: list[str]) -> dict[str, str]:
@@ -246,8 +394,9 @@ def proteomic_assay_map(cols: list[str]) -> dict[str, str]:
     return out
 
 
-def resolve_predictors(df: pd.DataFrame, spec: Any, new_predictors: list[str]) -> list[str]:
-    proteomic = list_proteomic_columns(df)
+def resolve_predictors(df: pd.DataFrame, spec: Any, new_predictors: list[str],
+                       prefixes: list[str] | None = None) -> list[str]:
+    proteomic = list_proteomic_columns(df, prefixes)
     if spec is None:
         spec = "both"
     if isinstance(spec, str):
@@ -618,6 +767,24 @@ def fit_cox(
     if report_col not in sub.columns:
         return None
 
+    # lifelines needs a fully numeric design matrix. A categorical covariate reaches
+    # CoxPHFitter as-is -- `collection_era` is the string 'pre_2020'/'2020_plus' -- and
+    # raises "could not convert string to float", which the tier loop below swallows,
+    # so the analyte silently produces no row. Until 2026-08-20 the only Cox fits that
+    # ever succeeded were those whose subsample happened to span a SINGLE era, where the
+    # constant-column filter above removed the string before it reached the fit; those
+    # results were era-unadjusted without recording it. Every proteomic analyte spans
+    # both eras, so the whole proteomic side of the Cox arm was empty.
+    #
+    # drop_first keeps the dummies from being collinear with the baseline hazard, which
+    # a Cox model has no intercept to absorb.
+    cat_cols = [c for c in sub.columns
+                if c not in protected and not pd.api.types.is_numeric_dtype(sub[c])]
+    if cat_cols:
+        sub = pd.get_dummies(sub, columns=cat_cols, drop_first=True, dtype=float)
+        if report_col not in sub.columns:
+            return None
+
     fit_kwargs = {"duration_col": duration_col, "event_col": event_col, "show_progress": False}
     if use_entry:
         fit_kwargs["entry_col"] = use_entry
@@ -706,6 +873,124 @@ def _earliest_visit_index(work: pd.DataFrame, pred: str, patno_values) -> pd.Ind
     return pd.Index(idx[first])
 
 
+# Read-only per-run state for the analyte loop. A forked worker inherits this by
+# virtue of it being module-level and set before the pool is created, so the
+# multi-GB frame is shared copy-on-write rather than pickled once per task.
+# Never mutated by a worker.
+_LOOP_STATE: dict[str, Any] = {}
+
+# Why the most recent `_fit_one_predictor` call produced no rows. Written by that
+# function, read once by `_fit_and_label`, which ships it back to the parent so the
+# tally is identical on the serial and fork paths. Single-slot and reset per analyte.
+_FIT_STATUS: dict[str, str] = {}
+
+# Outcomes tallied per run/stratum and reported when the CSV is written. Without this,
+# an analyte that never converged is indistinguishable from one that was never
+# applicable: both simply produce no row. The 2026-08-15 NSD_vs_notNSD_LRRK2|EUR run
+# lost 34,377 of 34,916 analytes this way and still logged "wrote 519 rows".
+FIT_OUTCOMES = ("ok", "ok_no_assay_pcs", "below_min_n", "fit_failed")
+
+
+def _fit_and_label(pred: str) -> dict:
+    """Fit one analyte and attach its labelling/bookkeeping fields.
+
+    The whole body of the analyte loop, factored out so the serial and parallel
+    paths run *identical* code — the only difference being which process calls it.
+
+    Takes only the analyte name: everything else is read from `_LOOP_STATE`, so a
+    task costs a short string to ship rather than a copy of the design frame.
+
+    Returns {"rows": [...], "status": one of FIT_OUTCOMES}. `rows` is empty for every
+    status but `ok`/`ok_no_assay_pcs`.
+    """
+    st = _LOOP_STATE
+    work = st["work"]
+    spec = st["spec"]
+    _FIT_STATUS.clear()
+
+    is_proteomic = pred in st["proteomic_set"]
+    # Auto-inject assay PCs for proteomic predictors
+    pc_cols = assay_pcs(st["assay_of"][pred]) if is_proteomic else []
+
+    # One row per participant at their earliest visit carrying this predictor.
+    # Only the row INDEX is computed here -- subsetting the full 23,800-column
+    # frame per predictor would copy ~1.5 GB each time. _fit_one_predictor
+    # narrows to the ~20 design columns first, then applies this index.
+    if st["visit_mode"] == "earliest_with_predictor":
+        row_index = _earliest_visit_index(work, pred, st["patno_values"])
+        if len(row_index) < st["min_n"]:
+            return {"rows": [], "status": "below_min_n"}
+    else:
+        row_index = None
+
+    rows = _fit_one_predictor(
+        work,
+        spec=spec,
+        model=st["model"],
+        predictor=pred,
+        covariates=st["covariates"],
+        proteomic_pcs=pc_cols,
+        random_group=st["random_group"],
+        min_n=st["min_n"],
+        zscore_binary=st["zscore_binary"],
+        zscore_dosage=st["zscore_dosage"],
+        row_index=row_index,
+    )
+    if not rows:
+        return {"rows": [], "status": _FIT_STATUS.get("reason", "fit_failed")}
+
+    pred_label, out_label = _predictor_outcome_labels(spec, pred)
+    for row in rows:
+        # For a decomposed LMM the reported term differs per row, so the
+        # predictor label has to name which component it is.
+        term = row.get("term")
+        label = pred_label if term in (None, "effect") else f"{pred_label}[{term}]"
+        row.update({
+            "predictor": label,
+            "outcome": out_label,
+            # The looped analyte/column. This -- not the row count -- is the
+            # Bonferroni denominator, since a decomposed LMM emits two rows
+            # per analyte and correcting on rows would silently double it.
+            "analyte": pred,
+            "term": term or "effect",
+            "strata": st["strata_val"] or "ALL",
+            "is_proteomic": bool(is_proteomic),
+            # Assay panel this predictor belongs to, used as the Bonferroni family.
+            "assay_family": st["assay_of"][pred] if is_proteomic else NON_HT_PROTEOMICS_FAMILY,
+            # Spike-in / assay controls: kept deliberately so their type-I rate
+            # is a visible calibration check, flagged so they are never mistaken
+            # for findings.
+            "is_control": bool(CONTROL_ANALYTE_RE.search(pred)),
+        })
+    return {"rows": rows, "status": _FIT_STATUS.get("reason", "ok")}
+
+
+def _analyte_results(predictors: list[str], n_workers: int, label: str,
+                     strata_val: str | None):
+    """Yield (i, result) over `predictors`, serially or across a fork pool.
+
+    `result` is the dict `_fit_and_label` returns: {"rows": [...], "status": ...}.
+
+    `imap` preserves input order, so the emitted sequence — and therefore the row
+    order of the output CSV — is identical to the serial path regardless of worker
+    count. Chunksize is 1 because fits are seconds long and vary several-fold in
+    cost (1.5-6.8 s observed); larger chunks would cost more in tail imbalance than
+    they save in IPC.
+    """
+    if n_workers <= 1:
+        for i, pred in enumerate(predictors):
+            yield i, _fit_and_label(pred)
+        return
+
+    log.info(f"  [{label}|{strata_val}] fitting on {n_workers} worker processes")
+    # fork (not spawn): workers must inherit `_LOOP_STATE` — and with it the frame —
+    # through copy-on-write. Under spawn they would re-import and re-load it each.
+    ctx = mp.get_context("fork")
+    with ctx.Pool(n_workers) as pool:
+        for i, result in enumerate(pool.imap(_fit_and_label, predictors, chunksize=1)):
+            yield i, result
+
+
 def run_one(
     df: pd.DataFrame,
     spec: dict,
@@ -713,6 +998,8 @@ def run_one(
     defaults: dict,
     proteomic_set: set[str],
     assay_of: dict[str, str],
+    n_workers: int = 1,
+    assay_prefixes: list[str] | None = None,
 ) -> pd.DataFrame:
     """Run one named spec on one strata subset; return results DataFrame."""
     label = spec.get("name", "unnamed")
@@ -758,7 +1045,7 @@ def run_one(
     # Predictors
     pred_spec = spec.get("predictors", defaults.get("predictors", "both"))
     new_preds = defaults.get("new_predictors", NEW_PREDICTORS)
-    predictors = resolve_predictors(work, pred_spec, new_preds)
+    predictors = resolve_predictors(work, pred_spec, new_preds, assay_prefixes)
     log.info(f"  [{label}|{strata_val}] {len(predictors)} predictors to fit")
 
     # Covariates
@@ -776,73 +1063,51 @@ def run_one(
     _patno_values = (work["PATNO"].to_numpy()
                      if visit_mode == "earliest_with_predictor" else None)
 
+    # Publish the loop's read-only inputs before any pool is forked, so workers
+    # inherit them rather than receiving a pickled copy per task.
+    _LOOP_STATE.update(
+        work=work, spec=spec, model=model, covariates=covariates,
+        proteomic_set=proteomic_set, assay_of=assay_of, random_group=random_group,
+        min_n=min_n, zscore_binary=zscore_binary, zscore_dosage=zscore_dosage,
+        visit_mode=visit_mode, patno_values=_patno_values, strata_val=strata_val,
+    )
+
     results: list[dict] = []
     first_logged = False
+    tally = {k: 0 for k in FIT_OUTCOMES}
 
-    for i, pred in enumerate(predictors):
-        is_proteomic = pred in proteomic_set
-        # Auto-inject assay PCs for proteomic predictors
-        pc_cols = assay_pcs(assay_of[pred]) if is_proteomic else []
-
-        # One row per participant at their earliest visit carrying this predictor.
-        # Only the row INDEX is computed here -- subsetting the full 23,800-column
-        # frame per predictor would copy ~1.5 GB each time. _fit_one_predictor
-        # narrows to the ~20 design columns first, then applies this index.
-        if visit_mode == "earliest_with_predictor":
-            row_index = _earliest_visit_index(work, pred, _patno_values)
-            if len(row_index) < min_n:
+    try:
+        for i, result in _analyte_results(predictors, n_workers, label, strata_val):
+            rows = result["rows"]
+            tally[result["status"]] = tally.get(result["status"], 0) + 1
+            if not rows:
                 continue
-        else:
-            row_index = None
+            results.extend(rows)
 
-        rows = _fit_one_predictor(
-            work,
-            spec=spec,
-            model=model,
-            predictor=pred,
-            covariates=covariates,
-            proteomic_pcs=pc_cols,
-            random_group=random_group,
-            min_n=min_n,
-            zscore_binary=zscore_binary,
-            zscore_dosage=zscore_dosage,
-            row_index=row_index,
-        )
-        if not rows:
-            continue
+            if not first_logged or (i + 1) % 500 == 0:
+                r0 = rows[0]
+                log.info(
+                    f"    [{i+1}/{len(predictors)}] {rows[0]['analyte']}: β={r0['beta']:+.4g} "
+                    f"SE={r0['SE']:.4g} P={r0['P']:.3g} N={r0['N']}"
+                )
+                first_logged = True
+    finally:
+        # Drop the frame reference so the next run's `work` is the only copy held.
+        _LOOP_STATE.clear()
 
-        pred_label, out_label = _predictor_outcome_labels(spec, pred)
-        for row in rows:
-            # For a decomposed LMM the reported term differs per row, so the
-            # predictor label has to name which component it is.
-            term = row.get("term")
-            label = pred_label if term in (None, "effect") else f"{pred_label}[{term}]"
-            row.update({
-                "predictor": label,
-                "outcome": out_label,
-                # The looped analyte/column. This -- not the row count -- is the
-                # Bonferroni denominator, since a decomposed LMM emits two rows
-                # per analyte and correcting on rows would silently double it.
-                "analyte": pred,
-                "term": term or "effect",
-                "strata": strata_val or "ALL",
-                "is_proteomic": bool(is_proteomic),
-                # Assay panel this predictor belongs to, used as the Bonferroni family.
-                "assay_family": assay_of[pred] if is_proteomic else NON_HT_PROTEOMICS_FAMILY,
-                # Spike-in / assay controls: kept deliberately so their type-I rate
-                # is a visible calibration check, flagged so they are never mistaken
-                # for findings.
-                "is_control": bool(CONTROL_ANALYTE_RE.search(pred)),
-            })
-            results.append(row)
-
-        if not first_logged or (i + 1) % 500 == 0:
-            r0 = rows[0]
-            log.info(
-                f"    [{i+1}/{len(predictors)}] {pred}: β={r0['beta']:+.4g} "
-                f"SE={r0['SE']:.4g} P={r0['P']:.3g} N={r0['N']}"
-            )
-            first_logged = True
+    # Account for every predictor offered. A fit that never converged and one that was
+    # never applicable both produce no row, so without this they are indistinguishable
+    # and a run that lost most of its analytes still looks like it succeeded.
+    log.info(f"  [{label}|{strata_val}] fit outcomes over {len(predictors):,} analytes: "
+             + ", ".join(f"{k}={tally.get(k, 0):,}" for k in FIT_OUTCOMES))
+    if tally.get("fit_failed"):
+        pct = 100.0 * tally["fit_failed"] / max(1, len(predictors))
+        log.warning(f"  [{label}|{strata_val}] {tally['fit_failed']:,} analytes ({pct:.1f}%) "
+                    f"failed to fit even without assay PCs — check stratum size vs "
+                    f"parameter count")
+    if tally.get("ok_no_assay_pcs"):
+        log.warning(f"  [{label}|{strata_val}] {tally['ok_no_assay_pcs']:,} analytes fitted "
+                    f"only after dropping assay PCs (flagged `assay_pcs_dropped`)")
 
     return pd.DataFrame(results)
 
@@ -954,6 +1219,7 @@ def _fit_one_predictor(
         sub = sub.loc[row_index]
     sub = sub.dropna().copy()
     if len(sub) < min_n:
+        _FIT_STATUS["reason"] = "below_min_n"
         return None
 
     # Z-score the looped predictor (matches LRRK2 style), skipping binary {0,1}
@@ -988,12 +1254,29 @@ def _fit_one_predictor(
     formula = build_full_formula(spec["formula"], predictor, covariates, proteomic_pcs)
     report_term = substitute_protein_term(spec.get("report_term", PROTEIN_TOKEN), predictor)
 
-    if model == "ols":
-        row = fit_ols(sub, formula, report_term)
-        return [row] if row else None
-    if model == "logit":
-        row = fit_logit(sub, formula, report_term)
-        return [row] if row else None
+    if model in ("ols", "logit"):
+        fitter = fit_ols if model == "ols" else fit_logit
+        row = fitter(sub, formula, report_term)
+        # Assay-PC fallback, mirroring the 3-tier LMM fallback below. The 5 auto-injected
+        # assay PCs are 5 of ~16 parameters, and in a small stratum that is enough to push
+        # a logit into quasi-complete separation: the IRLS Hessian goes singular even
+        # though the design matrix is full rank, and fit_logit's bare `except` turns that
+        # into a silently missing analyte. On the 2026-08-15 NSD_vs_notNSD_LRRK2|EUR run
+        # it destroyed all four Olink blocks -- 0/30 analytes fitted at N=46, against
+        # 29/30 on the SAME rows with the PCs dropped. Refitting without them keeps the
+        # analyte instead of losing it; `assay_pcs_dropped` marks which rows are
+        # unadjusted so they stay distinguishable from the adjusted ones.
+        dropped = False
+        if row is None and proteomic_pcs:
+            row = fitter(sub, build_full_formula(spec["formula"], predictor, covariates, []),
+                         report_term)
+            dropped = row is not None
+        if row is None:
+            _FIT_STATUS["reason"] = "fit_failed"
+            return None
+        row["assay_pcs_dropped"] = dropped
+        _FIT_STATUS["reason"] = "ok_no_assay_pcs" if dropped else "ok"
+        return [row]
     if model == "lmm":
         if random_group not in sub.columns:
             log.warning(f"  random_group '{random_group}' missing for {predictor}; skip")
@@ -1198,7 +1481,7 @@ def find_existing_output(cwd: str, output_dir: str, name: str, suffix: str) -> s
 
 
 def run_all(config: dict, cwd: str, run_filter: list[str] | None,
-            resume: bool = False) -> None:
+            resume: bool = False, n_workers: int = 1) -> None:
     defaults = config.get("defaults", {})
     output_dir = defaults.get("output_dir", "results")
     os.makedirs(os.path.join(cwd, output_dir), exist_ok=True)
@@ -1242,10 +1525,17 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None,
 
     input_glob = defaults.get("input_glob", "unified_PPMI-*.tab")
     input_path = resolve_input_path(input_glob, cwd)
-    df = load_data(input_path)
 
-    # Precompute proteomic/assay map once
-    proteomic_cols = list_proteomic_columns(df)
+    # Resolve the scope BEFORE the read, so the out-of-scope analyte columns are never
+    # loaded at all rather than loaded and then filtered. See load_data: the full-width
+    # read is what puts peak memory over what a 31 GB machine can hold.
+    scope = defaults.get("proteomic_scope", "all")
+    assay_prefixes = scoped_assay_prefixes(scope)
+    log.info(f"  proteomic_scope={scope} ({len(assay_prefixes)} assay blocks)")
+    df = load_data(input_path, assay_prefixes)
+
+    # Precompute proteomic/assay map once, restricted to the configured scope.
+    proteomic_cols = list_proteomic_columns(df, assay_prefixes)
     assay_of = proteomic_assay_map(proteomic_cols)
     proteomic_set = set(proteomic_cols)
     log.info(f"  {len(proteomic_cols):,} proteomic columns; {len(NEW_PREDICTORS)} non-proteomic in default list")
@@ -1259,8 +1549,16 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None,
         log.info(f"RUN: {name}  (model={spec['model']})")
         log.info("=" * 70)
 
+        # Parallelise the LMM runs only. They are the whole cost of a batch — a
+        # trajectory stratum takes 13-17 h against minutes for a logit/OLS/Cox run,
+        # because each analyte is a full REML optimisation (99.4% of fit time, with
+        # design construction at 0.6%). Every other model keeps the serial path
+        # untouched, where the pool would only add fork overhead.
+        run_workers = n_workers if spec["model"].lower() == "lmm" else 1
+
         for sv, suffix in pending:
-            results = run_one(df, spec, sv, defaults, proteomic_set, assay_of)
+            results = run_one(df, spec, sv, defaults, proteomic_set, assay_of,
+                              n_workers=run_workers, assay_prefixes=assay_prefixes)
             results = filter_numerical_failures(results, f"{name}|{sv}")
             results = apply_bonferroni(
                 results,
@@ -1326,7 +1624,20 @@ def main() -> None:
                         "that legitimately wrote no CSV (every fit a numerical "
                         "failure, as small strata often produce) is indistinguishable "
                         "from one that died before writing, so it is re-fitted.")
+    p.add_argument("--workers", type=int, default=1, metavar="N",
+                   help="Fit analytes across N worker processes. Applies to LMM "
+                        "(trajectory) runs only — every other model is fast enough "
+                        "serially. 1 (default) is the serial path. 0 means auto: "
+                        "all cores but two, capped at 14. Results are unaffected: "
+                        "fits are independent and output order is preserved, so any "
+                        "worker count yields a byte-identical CSV.")
     args = p.parse_args()
+
+    n_workers = args.workers
+    if n_workers == 0:
+        n_workers = max(1, min(14, (os.cpu_count() or 2) - 2))
+    if n_workers < 0:
+        p.error("--workers must be >= 0")
 
     cwd = os.path.dirname(os.path.abspath(args.config)) or os.getcwd()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1335,8 +1646,10 @@ def main() -> None:
 
     log.info(f"Config: {args.config}")
     log.info(f"Log:    {log_file}")
+    if n_workers > 1:
+        log.info(f"Workers: {n_workers} (LMM runs only; 1 BLAS thread each)")
     cfg = load_config(args.config)
-    run_all(cfg, cwd, args.run, args.resume)
+    run_all(cfg, cwd, args.run, args.resume, n_workers)
     log.info("\nDone.")
 
 
