@@ -26,9 +26,15 @@ Usage:
     # fast: negative controls only, over an existing results dir
     python3 calibration_check.py --results-dir results
 
-    # add a permutation null for specific runs (slow: refits n_sample analytes x2)
+    # add a permutation null for specific runs (slow: refits n_sample x n_perm analytes)
     python3 calibration_check.py --results-dir results --config batch.yaml \
-        --permute trajectory_HC_vs_PD --n-sample 150
+        --permute trajectory_HC_vs_PD --n-sample 100 --n-perm 10 --workers 14
+
+The permutation defaults are 100 analytes x 10 shuffles = 1,000 fits per run, drawn
+from whatever `defaults.proteomic_scope` the config sets (harmonized, i.e. 11,567
+analytes, for batch.yaml) so the null is built from the same universe the batch fits.
+--workers applies to the trajectory LMMs only; every other model already runs serially
+in about the time the fork would cost.
 """
 
 from __future__ import annotations
@@ -39,6 +45,16 @@ import os
 import re
 import sys
 import warnings
+
+# Pin BLAS to one thread per process BEFORE numpy imports, for the same reason and
+# with the same values as regressions.py — see the note there. It has to be repeated
+# here rather than inherited: `import regressions` happens inside permutation_null,
+# long after this module has already imported numpy, so by the time regressions sets
+# these OpenBLAS has read its thread count. Without this a --workers pool forks N
+# processes each spawning 16 BLAS threads.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 
 import numpy as np
 import pandas as pd
@@ -135,8 +151,96 @@ def control_report(results_dir: str) -> pd.DataFrame:
 # 2. Blocked permutation null
 # ============================================================================
 
-def permutation_null(config_path: str, run_name: str, stratum: str,
-                     n_sample: int, seed: int, n_perm: int = 1) -> pd.DataFrame:
+_LHS_RE = re.compile(r"^\s*(.+?)\s*~")
+
+
+def load_permutation_inputs(config_path: str) -> dict:
+    """The release frame plus scope metadata, read ONCE for a whole sweep.
+
+    Hoisted out of `permutation_null` on 2026-08-20, when the sweep went from the 10
+    trajectory runs to all 52. Loading per run cost ~25 s and a 3.89 GB read peak each,
+    so a full sweep would have spent 22 minutes in pure I/O and re-peaked memory 52
+    times. The frame is read-only here — every run takes its own filtered copy.
+
+    Read at the SAME analyte scope the batch ran at, resolved before the read the way
+    regressions.main does. Until 2026-08-20 this loaded unscoped, which was wrong twice
+    over. Statistically: it sampled from all 34,902 analytes while batch.yaml fits
+    11,567, so the null characterised a universe the batch never touched. And in
+    memory, which is what actually bit -- unscoped is 35,566 columns for a 5.15 GB
+    frame at a ~11 GB read peak, against 12,231 columns / 1.77 GB / 3.89 GB under
+    scope=harmonized. The trajectory LMMs are the tallest subsets in the batch and the
+    replicate loop holds two more copies of one at a time, so the full-width read is
+    what put the 31 GB box over.
+    """
+    import yaml
+    import regressions as R
+
+    cfg = yaml.safe_load(open(config_path))
+    defaults = cfg.get("defaults", {})
+    cwd = os.path.dirname(os.path.abspath(config_path))
+    scope = defaults.get("proteomic_scope", "all")
+    assay_prefixes = R.scoped_assay_prefixes(scope)
+    df = R.load_data(
+        R.resolve_input_path(defaults.get("input_glob", "unified_PPMI-*.tab"), cwd),
+        assay_prefixes)
+    proteomic = R.list_proteomic_columns(df, assay_prefixes)
+    return {"cfg": cfg, "defaults": defaults, "scope": scope, "df": df,
+            "proteomic": proteomic, "assay_of": R.proteomic_assay_map(proteomic)}
+
+
+def permutation_target(spec: dict, defaults: dict, columns) -> tuple[list[str], str]:
+    """Which column(s) a run's null shuffles, and how they travel.
+
+    Returns `(cols, kind)`, or `([], reason)` for a run that cannot be permuted.
+
+    Every run shuffles BETWEEN SUBJECTS; what differs is which column carries the
+    assignment that has to be broken. Before 2026-08-20 only the first case existed
+    and everything else exited, which is why the sweep covered 14 of 52 runs:
+
+      interaction  `report_term` names a second term beside the time column -- the
+                   trajectory LMMs (`YEAR:grp_*`) and the *_x_PRS OLS runs
+                   (`PROTEIN:PRS157`). That term IS the reported contrast, so it is
+                   what the null must destroy.
+      outcome      `report_term` is a bare `PROTEIN`, meaning the protein itself is
+                   the tested term. The association to break is then against the
+                   formula's left-hand side -- the logit `grp_*` and OLS `slope_*`
+                   runs.
+      survival     Cox specs carry no formula at all; the outcome is the
+                   (duration_col, event_col) pair. THE PAIR MUST MOVE TOGETHER -- a
+                   shuffle that separates them manufactures follow-up times that were
+                   never observed, and the resulting null is not the study's design.
+
+    `PROTEIN` is a substitution token, not a column, so the `p in columns` test is what
+    makes the interaction case fall through to `outcome` rather than matching on it.
+    """
+    model = str(spec.get("model", "")).lower()
+
+    if model == "cox":
+        dur = spec.get("duration_col", defaults.get("duration_col"))
+        ev = spec.get("event_col", defaults.get("event_col"))
+        pair = [c for c in (dur, ev) if c]
+        missing = [c for c in pair if c not in columns]
+        if len(pair) != 2 or missing:
+            return [], f"cox spec needs duration_col+event_col present (missing {missing or pair})"
+        return pair, "survival"
+
+    time_col = spec.get("time_col", defaults.get("time_col", "YEAR"))
+    parts = [p.strip() for p in str(spec.get("report_term", "")).split(":")]
+    inter = [p for p in parts if p != time_col and p in columns]
+    if inter:
+        return inter[:1], "interaction"
+
+    m = _LHS_RE.match(str(spec.get("formula", "")))
+    if m and m.group(1) in columns:
+        return [m.group(1)], "outcome"
+
+    return [], (f"no permutable column from report_term "
+                f"'{spec.get('report_term', '')}' or formula '{spec.get('formula', '')}'")
+
+
+def permutation_null(ctx: dict, run_name: str, stratum: str,
+                     n_sample: int, seed: int, n_perm: int = 1,
+                     n_workers: int = 1) -> tuple[pd.DataFrame, str]:
     """Refit `n_sample` analytes with the group label shuffled between subjects.
 
     The shuffle is blocked on (n_obs, mean-time tertile) so the permuted groups keep
@@ -152,29 +256,32 @@ def permutation_null(config_path: str, run_name: str, stratum: str,
     only the label shuffle varies (`seed + i`). Redrawing analytes each replicate would
     fold analyte-sampling variance into the spread and overstate permutation
     instability, which is the opposite of what the replicates are measuring.
+
+    The cost parameters, stated once here because the reported false-positive range is
+    only interpretable against them:
+
+      n_sample   analytes drawn, from the `proteomic_scope` universe (default 100).
+                 The rate is a binomial proportion over n_sample x n_perm fits, so
+                 this and n_perm together set its precision -- 100 x 10 = 1,000 fits
+                 gives roughly +/-1.4 points at a true 5%.
+      n_perm     label shuffles (default 10). Sets the spread REPORTED in the range
+                 column; n_perm=1 reports a point with no error bar.
+      n_workers  processes over the analyte loop. LMM runs only, matching
+                 R.PARALLEL_MODELS -- everything else is fast enough serially and
+                 would only pay fork overhead. Results are unaffected: `imap`
+                 preserves order and the fits are independent.
     """
-    import yaml
     import regressions as R
 
     warnings.filterwarnings("ignore")
-    cfg = yaml.safe_load(open(config_path))
-    defaults = cfg.get("defaults", {})
-    spec = next((s for s in cfg["runs"] if s.get("name") == run_name), None)
+    defaults, df = ctx["defaults"], ctx["df"]
+    spec = next((s for s in ctx["cfg"]["runs"] if s.get("name") == run_name), None)
     if spec is None:
-        sys.exit(f"ERROR: run '{run_name}' not in {config_path}")
+        return pd.DataFrame(), f"no run named '{run_name}' in the config"
 
-    cwd = os.path.dirname(os.path.abspath(config_path))
-    df = R.load_data(R.resolve_input_path(defaults.get("input_glob", "unified_PPMI-*.tab"), cwd))
-    proteomic = R.list_proteomic_columns(df)
-    assay_of = R.proteomic_assay_map(proteomic)
-
-    # The permuted label replaces the real grouping column everywhere it appears.
-    report_term = spec.get("report_term", "")
-    parts = [p.strip() for p in report_term.split(":")]
-    time_col = spec.get("time_col", defaults.get("time_col", "YEAR"))
-    group_col = next((p for p in parts if p != time_col), None)
-    if group_col is None or group_col not in df.columns:
-        sys.exit(f"ERROR: could not identify the group column from report_term '{report_term}'")
+    target, kind = permutation_target(spec, defaults, df.columns)
+    if not target:
+        return pd.DataFrame(), kind  # `kind` carries the reason when target is empty
 
     strata_col = defaults.get("strata_col")
     work = df[df[strata_col] == stratum] if strata_col else df
@@ -183,30 +290,55 @@ def permutation_null(config_path: str, run_name: str, stratum: str,
         work = work.query(sample_filter)
     work = work.copy()
 
+    min_n = spec.get("min_n", defaults.get("min_n", 20))
+    if len(work) < min_n:
+        return pd.DataFrame(), f"only {len(work)} rows after sample_filter (min_n={min_n})"
+
     # Fixed across replicates — see the docstring.
-    cols = [c for c in proteomic if c in work.columns]
+    cols = [c for c in ctx["proteomic"] if c in work.columns]
+    if not cols:
+        return pd.DataFrame(), "no in-scope analyte columns"
     sample = list(np.random.default_rng(seed).choice(
         cols, size=min(n_sample, len(cols)), replace=False))
     spec = dict(spec)
     spec["predictors"] = sample
 
-    per = work.groupby("PATNO").agg(lab=(group_col, "first"),
-                                    n_obs=(time_col, "size"),
-                                    mt=(time_col, "mean"))
+    # One row per subject: the values to be shuffled, plus the block key. Blocking is on
+    # (n_obs, mean-time tertile) for EVERY model, not just the longitudinal ones. The
+    # single-visit runs still carry all their visits in `work` at this point -- the
+    # one-row-per-subject reduction happens inside run_one, per predictor -- so n_obs
+    # and mean-time remain the real follow-up structure there too, which is exactly the
+    # imbalance a free shuffle would destroy.
+    time_col = spec.get("time_col", defaults.get("time_col", "YEAR"))
+    per = work.groupby("PATNO").agg(n_obs=(time_col, "size"), mt=(time_col, "mean"))
+    lab = work.groupby("PATNO")[target].first()
     blk = (per.n_obs.clip(upper=4).astype(str) + "|"
            + pd.qcut(per.mt, 3, labels=False, duplicates="drop").astype(str))
-    blocks = list(per.groupby(blk).groups.values())
+    blocks = [idx for idx in per.groupby(blk).groups.values() if len(idx) > 1]
+
+    # Same gate run_all applies: fork only the models whose analyte loop is worth it.
+    run_workers = n_workers if str(spec["model"]).lower() in R.PARALLEL_MODELS else 1
+    print(f"    {run_name}|{stratum} [{spec['model']}/{kind}]: {len(work):,} rows x "
+          f"{len(sample)} analytes x {n_perm} perms on {run_workers} worker(s); "
+          f"shuffling {'+'.join(target)} across {len(blocks)} blocks", flush=True)
 
     frames: list[pd.DataFrame] = []
     for i in range(n_perm):
         rng = np.random.default_rng(seed + i)
-        permuted = per.lab.copy()
+        permuted = lab.copy()
         for idx in blocks:
-            permuted.loc[idx] = rng.permutation(per.lab.loc[idx].to_numpy())
+            # ONE subject order per block, applied to every target column. That is what
+            # keeps a Cox (duration, event) pair together: shuffling the two columns
+            # independently would pair a subject's follow-up time with another's event
+            # status and invent observations the study never made.
+            order = rng.permutation(len(idx))
+            permuted.loc[idx, target] = lab.loc[idx, target].to_numpy()[order]
         rep = work.copy()
-        rep[group_col] = rep.PATNO.map(permuted.to_dict())
+        for c in target:
+            rep[c] = rep.PATNO.map(permuted[c])
 
-        out = R.run_one(rep, spec, None, defaults, set(proteomic), assay_of)
+        out = R.run_one(rep, spec, None, defaults, set(ctx["proteomic"]), ctx["assay_of"],
+                        n_workers=run_workers)
         out = R.filter_numerical_failures(out, f"NULL:{run_name}|{stratum}|perm{i}")
         if not out.empty:
             out = out.copy()
@@ -215,7 +347,9 @@ def permutation_null(config_path: str, run_name: str, stratum: str,
         print(f"    permutation {i + 1}/{n_perm}: {len(out):,} fits"
               f"{'' if not out.empty else '  (none survived filtering)'}", flush=True)
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not frames:
+        return pd.DataFrame(), "every fit was filtered out as a numerical failure"
+    return pd.concat(frames, ignore_index=True), kind
 
 
 # ============================================================================
@@ -224,16 +358,34 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Calibration check for a results directory")
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--config", help="batch.yaml — required for --permute")
-    ap.add_argument("--permute", nargs="*", default=[], help="run name(s) to permutation-test")
+    ap.add_argument("--permute", nargs="*", default=[],
+                    help="run name(s) to permutation-test, or 'all' for every run in "
+                         "the config. A run with no permutable column is reported as "
+                         "skipped rather than aborting the sweep.")
     ap.add_argument("--stratum", default="EUR")
-    ap.add_argument("--n-sample", type=int, default=150)
+    ap.add_argument("--n-sample", type=int, default=100,
+                    help="analytes sampled per run (default 100), drawn from the "
+                         "config's proteomic_scope universe. With --n-perm 10 that is "
+                         "1,000 fits per run, which pins the reported false-positive "
+                         "rate to about +/-1.4 points at a true 5%%.")
     ap.add_argument("--n-perm", type=int, default=10,
                     help="permutation replicates per run (default 10). Cost is linear: "
                          "each replicate refits --n-sample analytes. 1 reproduces the "
                          "pre-2026-08-15 single-shuffle behaviour.")
+    ap.add_argument("--workers", type=int, default=1, metavar="N",
+                    help="Fit analytes across N worker processes. LMM (trajectory) runs "
+                         "only, matching regressions.py --workers. 1 (default) is the "
+                         "serial path. 0 means auto: all cores but two, capped at 14. "
+                         "Results are unaffected by the count.")
     ap.add_argument("--seed", type=int, default=20260731)
     ap.add_argument("--output", default="calibration_report.md")
     args = ap.parse_args()
+
+    n_workers = args.workers
+    if n_workers == 0:
+        n_workers = max(1, min(14, (os.cpu_count() or 2) - 2))
+    if n_workers < 0:
+        ap.error("--workers must be >= 0")
 
     lines: list[str] = ["# Calibration report\n"]
 
@@ -270,16 +422,29 @@ def main() -> None:
                      f"variability alone, not analyte sampling. A single replicate reports "
                      f"a point with no error bar; the **range** column is what says whether "
                      f"that point could be trusted.\n")
-        lines.append("| Run | Term | perms | n fits | λ mean ± sd | λ range | "
+        ctx = load_permutation_inputs(args.config)
+        names = [s.get("name") for s in ctx["cfg"]["runs"] if s.get("name")]
+        targets = names if args.permute == ["all"] else args.permute
+        lines.append(f"Sweeping **{len(targets)} of {len(names)}** configured runs at "
+                     f"stratum **{args.stratum}**, scope **{ctx['scope']}** "
+                     f"({len(ctx['proteomic']):,} in-scope analytes), seed {args.seed}.\n")
+
+        lines.append("| Run | Model | Shuffled | Term | perms | n fits | λ mean ± sd | λ range | "
                      "% P<0.05 mean ± sd | % range | warn |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
         warn_total = 0
-        for run_name in args.permute:
-            res = permutation_null(args.config, run_name, args.stratum,
-                                   args.n_sample, args.seed, args.n_perm)
+        skipped: list[tuple[str, str]] = []
+        for run_name in targets:
+            spec = next((s for s in ctx["cfg"]["runs"] if s.get("name") == run_name), {})
+            model = spec.get("model", "?")
+            res, note = permutation_null(ctx, run_name, args.stratum,
+                                         args.n_sample, args.seed, args.n_perm, n_workers)
             if res.empty:
-                lines.append(f"| `{run_name}` | — | 0 | 0 | — | — | — | — | — |")
+                lines.append(f"| `{run_name}` | {model} | — | — | 0 | 0 | — | — | — | — | skipped |")
+                skipped.append((run_name, note))
+                print(f"  {run_name}: SKIPPED — {note}")
                 continue
+            shuffled = "+".join(permutation_target(spec, ctx["defaults"], ctx["df"].columns)[0])
             terms = res["term"].unique() if "term" in res.columns else ["effect"]
             for term in terms:
                 g = res[res["term"] == term] if "term" in res.columns else res
@@ -297,7 +462,8 @@ def main() -> None:
                 flag = ("⚠️ unstable" if straddles else
                         "⚠️ inflated" if n_over == len(pct) else "ok")
                 lines.append(
-                    f"| `{run_name}` | {term} | {len(per_perm)} | {int(per_perm['n'].sum()):,} | "
+                    f"| `{run_name}` | {model} | `{shuffled}` | {term} | {len(per_perm)} | "
+                    f"{int(per_perm['n'].sum()):,} | "
                     f"{lam.mean():.3f} ± {lam.std():.3f} | {lam.min():.3f}–{lam.max():.3f} | "
                     f"{pct.mean():.1f}% ± {pct.std():.1f} | {pct.min():.1f}–{pct.max():.1f}% | "
                     f"{flag} |")
@@ -308,6 +474,17 @@ def main() -> None:
         lines.append(f"\n**{warn_total}** permutation replicate(s) exceeded the "
                      f"{CONTROL_TYPE_I_LIMIT:.0f}% type-I limit across all runs tested. "
                      f"A run flagged `unstable` had replicates on both sides of it.\n")
+
+        # Listed explicitly rather than silently absent: a sweep that covered 40 of 52
+        # runs and a sweep that covered 52 look identical in the table above, and the
+        # difference is exactly what a reader would need to know before quoting a range.
+        if skipped:
+            lines.append(f"\n### Skipped ({len(skipped)} of {len(targets)})\n")
+            lines.append("| Run | Why |")
+            lines.append("|---|---|")
+            for run_name, note in skipped:
+                lines.append(f"| `{run_name}` | {note} |")
+            lines.append("")
 
     with open(args.output, "w") as f:
         f.write("\n".join(lines) + "\n")
