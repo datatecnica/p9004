@@ -52,6 +52,19 @@ defaults:
   # 15 from p293_olink_plasma, and Abeta-38/40/42 from p288_CNS_plasma.
   # Set to `all` to test every project block instead.
   proteomic_scope: harmonized
+  # Cox counterpart to min_groups_per_param: a survival model is carried by its
+  # EVENTS, not its row count, so require events >= 2 x design parameters. Added
+  # 2026-08-20, when fixing the Cox categorical bug made these fits run for the first
+  # time and exposed cox_nsd_2b_to_later|AJ converging happily on 18 events against 17
+  # parameters. Drops the four cox_nsd_2a/2b_to_later|AJ stratum-runs (0.5-1.2 events
+  # per parameter) and keeps 86% of proteomic Cox rows.
+  #
+  # This removes what cannot be estimated, not everything underpowered: the remaining
+  # AJ Cox runs sit at 2-4 events per parameter, well under the classic EPV rule of 10.
+  # Every Cox row carries `events_per_param`, so a stricter cut is a filter downstream
+  # rather than a refit. Raising it here prunes hard: 3 -> 68% of rows, 5 -> 46%,
+  # 10 -> 12% (which would leave AJ represented by cox_pm_any alone). 0 disables.
+  min_events_per_param: 2
   # Effective independent proteins for the proteome-wide Bonferroni lens.
   n_independent_proteins: 9500
   random_group: PATNO

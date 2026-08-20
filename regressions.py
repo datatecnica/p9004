@@ -201,6 +201,30 @@ DEGENERATE_BETA_THRESHOLD = 1e-10
 # 83% of fits; 3-4x buys little more and costs real EUR fits.
 MIN_GROUPS_PER_PARAM_DEFAULT = 2
 
+# The Cox analogue: a survival model is carried by its EVENTS, not its row count, so
+# requiring events >= 2 x (number of design parameters) is the same rule as above
+# expressed in the currency Cox actually spends. Set per-run/defaults via
+# `min_events_per_param`; 0 disables the gate.
+#
+# 2 is deliberately permissive and matches MIN_GROUPS_PER_PARAM_DEFAULT. It removes
+# what cannot be estimated, not everything underpowered: on the 2026-08-20 batch it
+# drops the four cox_nsd_2a/2b_to_later|AJ stratum-runs (9-18 events against 15-17
+# parameters, i.e. 0.5-1.2 events per parameter) and keeps 86% of proteomic rows.
+# Raising it prunes hard -- 3 -> 68%, 5 -> 46%, 10 (the classic EPV rule) -> 12%, which
+# would leave AJ represented by cox_pm_any alone. Rows carry `events_per_param` so a
+# stricter cut can be applied downstream without refitting.
+MIN_EVENTS_PER_PARAM_DEFAULT = 2
+
+# Models whose analyte loop is worth forking across workers, and how many analytes to
+# hand a worker at a time. LMM is the expensive one (a full REML optimisation per
+# analyte, 13-17 h per stratum serially). Cox is far cheaper per fit (~46 ms) but there
+# are 11,581 of them per stratum-run, which is still ~9 minutes each and ~5 h for a
+# 32-run Cox batch; batching amortises the IPC that would otherwise dominate at that
+# fit cost. OLS/Logit stay serial -- they finish in ~2 minutes, less than the fork and
+# copy-on-write warm-up would cost.
+PARALLEL_MODELS = ("lmm", "cox")
+CHUNKSIZE_BY_MODEL = {"lmm": 1, "cox": 64}
+
 # Collapsed-variance guard for LMM fits, on the SE * sqrt(N) scale. Because the LMM
 # outcome is z-scored this quantity is comparable across analytes: the 2026-08-01
 # batch had a median of 1.45 and a 0.1st percentile of 0.28, so 0.2 sits below
@@ -687,6 +711,7 @@ def fit_cox(
     skip_zscore: bool = False,
     interaction_with: str | None = None,
     entry_col: str | None = None,
+    min_events_per_param: float = 0.0,
 ) -> dict | None:
     """Cox PH via lifelines with 3-tier fallback.
 
@@ -785,6 +810,18 @@ def fit_cox(
         if report_col not in sub.columns:
             return None
 
+    # Events-per-parameter gate, the Cox counterpart to the LMM cluster-count gate.
+    # A Cox model's information comes from its events, so N is the wrong yardstick:
+    # cox_nsd_2b_to_later|AJ reaches N=26 but only 18 events against 17 parameters,
+    # and lifelines converges on it happily while the coefficients are meaningless.
+    # Applied to the FINAL design, after constant columns are dropped and the dummies
+    # are expanded, so the parameter count is the one actually estimated.
+    n_params = int(sum(1 for c in sub.columns if c not in protected))
+    n_events = int(sub[event_col].sum())
+    if min_events_per_param > 0 and n_events < min_events_per_param * n_params:
+        _FIT_STATUS["reason"] = "thin_events"
+        return None
+
     fit_kwargs = {"duration_col": duration_col, "event_col": event_col, "show_progress": False}
     if use_entry:
         fit_kwargs["entry_col"] = use_entry
@@ -813,7 +850,13 @@ def fit_cox(
         "SE": float(row["se(coef)"]),
         "P": float(row["p"]),
         "N": int(sub.shape[0]),
-        "n_events": int(sub[event_col].sum()),
+        "n_events": n_events,
+        # Design parameters actually estimated, and the events available per one of
+        # them. Emitted so a stricter cut than `min_events_per_param` can be applied
+        # downstream without refitting: the classic EPV rule is 10, the gate default
+        # is 2, and everything in between is a filter on this column.
+        "n_params": n_params,
+        "events_per_param": round(n_events / n_params, 3) if n_params else np.nan,
         # Participants excluded because their event preceded the predictor
         # measurement. A large value means the panel was sampled too late to
         # predict this outcome from study baseline.
@@ -888,7 +931,7 @@ _FIT_STATUS: dict[str, str] = {}
 # an analyte that never converged is indistinguishable from one that was never
 # applicable: both simply produce no row. The 2026-08-15 NSD_vs_notNSD_LRRK2|EUR run
 # lost 34,377 of 34,916 analytes this way and still logged "wrote 519 rows".
-FIT_OUTCOMES = ("ok", "ok_no_assay_pcs", "below_min_n", "fit_failed")
+FIT_OUTCOMES = ("ok", "ok_no_assay_pcs", "below_min_n", "thin_events", "fit_failed")
 
 
 def _fit_and_label(pred: str) -> dict:
@@ -932,6 +975,7 @@ def _fit_and_label(pred: str) -> dict:
         proteomic_pcs=pc_cols,
         random_group=st["random_group"],
         min_n=st["min_n"],
+        min_events_per_param=st["min_events_per_param"],
         zscore_binary=st["zscore_binary"],
         zscore_dosage=st["zscore_dosage"],
         row_index=row_index,
@@ -966,28 +1010,32 @@ def _fit_and_label(pred: str) -> dict:
 
 
 def _analyte_results(predictors: list[str], n_workers: int, label: str,
-                     strata_val: str | None):
+                     strata_val: str | None, chunksize: int = 1):
     """Yield (i, result) over `predictors`, serially or across a fork pool.
 
     `result` is the dict `_fit_and_label` returns: {"rows": [...], "status": ...}.
 
     `imap` preserves input order, so the emitted sequence — and therefore the row
     order of the output CSV — is identical to the serial path regardless of worker
-    count. Chunksize is 1 because fits are seconds long and vary several-fold in
-    cost (1.5-6.8 s observed); larger chunks would cost more in tail imbalance than
-    they save in IPC.
+    count.
+
+    `chunksize` is per-model (CHUNKSIZE_BY_MODEL). An LMM fit takes seconds and varies
+    several-fold in cost (1.5-6.8 s observed), so chunks of 1 keep the tail balanced
+    and IPC is negligible against the work. A Cox fit takes ~46 ms, where per-task
+    round-trips would dominate instead, so its workers take larger batches.
     """
     if n_workers <= 1:
         for i, pred in enumerate(predictors):
             yield i, _fit_and_label(pred)
         return
 
-    log.info(f"  [{label}|{strata_val}] fitting on {n_workers} worker processes")
+    log.info(f"  [{label}|{strata_val}] fitting on {n_workers} worker processes "
+             f"(chunksize={chunksize})")
     # fork (not spawn): workers must inherit `_LOOP_STATE` — and with it the frame —
     # through copy-on-write. Under spawn they would re-import and re-load it each.
     ctx = mp.get_context("fork")
     with ctx.Pool(n_workers) as pool:
-        for i, result in enumerate(pool.imap(_fit_and_label, predictors, chunksize=1)):
+        for i, result in enumerate(pool.imap(_fit_and_label, predictors, chunksize=chunksize)):
             yield i, result
 
 
@@ -1057,6 +1105,8 @@ def run_one(
     # Random group (LMM)
     random_group = spec.get("random_group", defaults.get("random_group", "PATNO"))
     min_n = spec.get("min_n", defaults.get("min_n", MIN_N_DEFAULT))
+    min_epp = spec.get("min_events_per_param",
+                       defaults.get("min_events_per_param", MIN_EVENTS_PER_PARAM_DEFAULT))
     zscore_binary = spec.get("zscore_binary", defaults.get("zscore_binary", ZSCORE_BINARY_DEFAULT))
     zscore_dosage = spec.get("zscore_dosage", defaults.get("zscore_dosage", ZSCORE_DOSAGE_DEFAULT))
 
@@ -1068,7 +1118,8 @@ def run_one(
     _LOOP_STATE.update(
         work=work, spec=spec, model=model, covariates=covariates,
         proteomic_set=proteomic_set, assay_of=assay_of, random_group=random_group,
-        min_n=min_n, zscore_binary=zscore_binary, zscore_dosage=zscore_dosage,
+        min_n=min_n, min_events_per_param=min_epp,
+        zscore_binary=zscore_binary, zscore_dosage=zscore_dosage,
         visit_mode=visit_mode, patno_values=_patno_values, strata_val=strata_val,
     )
 
@@ -1077,7 +1128,8 @@ def run_one(
     tally = {k: 0 for k in FIT_OUTCOMES}
 
     try:
-        for i, result in _analyte_results(predictors, n_workers, label, strata_val):
+        for i, result in _analyte_results(predictors, n_workers, label, strata_val,
+                                          chunksize=CHUNKSIZE_BY_MODEL.get(model, 1)):
             rows = result["rows"]
             tally[result["status"]] = tally.get(result["status"], 0) + 1
             if not rows:
@@ -1108,6 +1160,11 @@ def run_one(
     if tally.get("ok_no_assay_pcs"):
         log.warning(f"  [{label}|{strata_val}] {tally['ok_no_assay_pcs']:,} analytes fitted "
                     f"only after dropping assay PCs (flagged `assay_pcs_dropped`)")
+    if tally.get("thin_events"):
+        pct = 100.0 * tally["thin_events"] / max(1, len(predictors))
+        log.warning(f"  [{label}|{strata_val}] {tally['thin_events']:,} analytes ({pct:.1f}%) "
+                    f"gated by min_events_per_param={min_epp} — too few events to support "
+                    f"the design, NOT a fit failure")
 
     return pd.DataFrame(results)
 
@@ -1186,6 +1243,7 @@ def _fit_one_predictor(
     proteomic_pcs: list[str],
     random_group: str,
     min_n: int,
+    min_events_per_param: float = 0.0,
     zscore_binary: bool,
     zscore_dosage: bool,
     row_index: pd.Index | None = None,
@@ -1247,6 +1305,7 @@ def _fit_one_predictor(
             skip_zscore=True,  # _fit_one_predictor already z-scored (or not) per switch
             interaction_with=interaction_with,
             entry_col=entry_col,
+            min_events_per_param=min_events_per_param,
         )
         return [row] if row else None
 
@@ -1554,7 +1613,7 @@ def run_all(config: dict, cwd: str, run_filter: list[str] | None,
         # because each analyte is a full REML optimisation (99.4% of fit time, with
         # design construction at 0.6%). Every other model keeps the serial path
         # untouched, where the pool would only add fork overhead.
-        run_workers = n_workers if spec["model"].lower() == "lmm" else 1
+        run_workers = n_workers if spec["model"].lower() in PARALLEL_MODELS else 1
 
         for sv, suffix in pending:
             results = run_one(df, spec, sv, defaults, proteomic_set, assay_of,
